@@ -1351,20 +1351,20 @@ local function CreateDressingRoom(parent)
     -- Get player class and set appropriate texture
     local _, playerClass = UnitClass("player")
     local texturePaths = {
-        WARRIOR = "Interface\\AddOns\\Transmog\\Assets\\dressingroomwarrior",
-        PALADIN = "Interface\\AddOns\\Transmog\\Assets\\dressingroompaladin",
-        HUNTER = "Interface\\AddOns\\Transmog\\Assets\\dressingroomhunter",
-        ROGUE = "Interface\\AddOns\\Transmog\\Assets\\dressingroomrogue",
-        PRIEST = "Interface\\AddOns\\Transmog\\Assets\\dressingroompriest",
-        DEATHKNIGHT = "Interface\\AddOns\\Transmog\\Assets\\dressingroomdeathknight",
-        SHAMAN = "Interface\\AddOns\\Transmog\\Assets\\dressingroomshaman",
-        MAGE = "Interface\\AddOns\\Transmog\\Assets\\dressingroommage",
-        WARLOCK = "Interface\\AddOns\\Transmog\\Assets\\dressingroomwarlock",
-        DRUID = "Interface\\AddOns\\Transmog\\Assets\\dressingroomdruid"
+        WARRIOR = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarrior",
+        PALADIN = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroompaladin",
+        HUNTER = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomhunter",
+        ROGUE = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomrogue",
+        PRIEST = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroompriest",
+        DEATHKNIGHT = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdeathknight",
+        SHAMAN = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomshaman",
+        MAGE = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroommage",
+        WARLOCK = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock",
+        DRUID = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdruid"
     }
     
     -- Set texture based on class, default to warlock if not found
-    local texturePath = texturePaths[playerClass] or "Interface\\AddOns\\Transmog\\Assets\\dressingroomwarlock"
+    local texturePath = texturePaths[playerClass] or "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock"
     bgTexture:SetTexture(texturePath)
     
     -- Calculate cropping for square texture in portrait frame
@@ -1391,7 +1391,7 @@ local function CreateDressingRoom(parent)
     
     function frame:UpdateBackgroundTexture()
         local _, currentClass = UnitClass("player")
-        local newTexturePath = texturePaths[currentClass] or "Interface\\AddOns\\Transmog\\Assets\\dressingroomwarlock"
+        local newTexturePath = texturePaths[currentClass] or "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock"
         self.bgTexture:SetTexture(newTexturePath)
         self.bgTexture:SetTexCoord(left, right, 0, 1)
     end
@@ -1789,14 +1789,14 @@ local function CreateCharacterFrameTab()
     end
     -- Second background ornament to replace wrists for smoother ui
     tab.BG2 = tab:CreateTexture(nil, "BACKGROUND")
-    tab.BG2:SetTexture("Interface\\AddOns\\Transmog\\Assets\\uiframediamondmetalclassicborder")
+    tab.BG2:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
     tab.BG2:SetTexCoord(0, 0.5625, 0, 0.5625)
 	tab.BG2:SetPoint("center", CharacterFrame, "center", -152, -124)
     tab.BG2:SetSize(58, 58)
 	
     -- Background ornament
     tab.BG = tab:CreateTexture(nil, "BACKGROUND")
-    tab.BG:SetTexture("Interface\\AddOns\\Transmog\\Assets\\uiframediamondmetalclassicborder")
+    tab.BG:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
     tab.BG:SetTexCoord(0, 0.5625, 0, 0.5625)
     tab.BG:SetSize(58, 58)
     tab.BG:SetPoint("CENTER")
