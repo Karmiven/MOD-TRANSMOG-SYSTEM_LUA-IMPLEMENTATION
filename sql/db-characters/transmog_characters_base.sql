@@ -13,19 +13,17 @@ DROP TABLE IF EXISTS `mod_transmog_system_sets`;
 -- ============================================================================
 -- mod_transmog_system_collection: Account-wide appearance collection
 -- Stores all item appearances unlocked by any character on the account
+-- Note: item_class, item_subclass, inventory_type are queried from 
+--       acore_world.item_template at runtime for filtering
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS `mod_transmog_system_collection` (
     `account_id` INT UNSIGNED NOT NULL COMMENT 'Account ID from auth.account',
     `item_id` INT UNSIGNED NOT NULL COMMENT 'Item entry from item_template',
-    `item_class` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Item class (2=Weapon, 4=Armor)',
-    `item_subclass` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Item subclass for filtering',
-    `inventory_type` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Inventory type for slot mapping',
     `unlock_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When the appearance was unlocked',
     PRIMARY KEY (`account_id`, `item_id`),
     KEY `idx_account` (`account_id`),
-    KEY `idx_item` (`item_id`),
-    KEY `idx_slot_filter` (`account_id`, `inventory_type`, `item_subclass`)
-) ENGINE=INNODB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
+    KEY `idx_item` (`item_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
 COMMENT='Account-wide transmog appearance collection';
 
 -- ============================================================================
