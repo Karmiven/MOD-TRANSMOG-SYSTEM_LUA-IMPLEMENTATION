@@ -106,8 +106,27 @@ L["APPEARANCE_NOT_COLLECTED"] = "You don't have this appearance"
 L["ERROR_INVALID_SLOT_OR_ITEM"] = "Invalid slot or item"
 L["ERROR_INVALID_SLOT"] = "Invalid equipment slot"
 
--- Tooltips
-L["MINIMAP_TOOLTIP"] = "Left-click: Open Transmog\nRight-click: Options"
-
 -- Filters
 L["SELECT_ITEM_CLICK"] = "Click to select this item"
+
+-- Set Management
+L["SET_NEW"] = "New Set..."
+L["SET_SELECT"] = "Select Set"
+L["SET_DEFAULT_NAME"] = "Set %d"
+L["SET_SAVE"] = "Save"
+L["SET_DELETE"] = "Del"
+L["SET_APPLY"] = "Apply"
+L["SET_SAVE_PROMPT"] = "Enter set name:"
+L["SET_SAVED"] = "Set '%s' saved!"
+L["SET_LOADED"] = "Set '%s' loaded into preview"
+L["SET_DELETED"] = "Set #%d deleted"
+L["SET_APPLIED"] = "Set '%s' applied!"
+L["SET_ERROR"] = "Set operation failed"
+L["SET_FULL"] = "|cffff0000[Transmog]|r All set slots are full. Delete a set first."
+L["SET_NO_SELECTION"] = "|cffff0000[Transmog]|r No items selected. Click items in the preview to select them first."
+L["SET_SELECT_FIRST"] = "|cffff0000[Transmog]|r Select a set first."
+L["SET_DELETE_CONFIRM"] = "Delete this set?"
+L["SET_SAVE_TOOLTIP"] = "Save selected items as a new set"
+L["SET_DELETE_TOOLTIP"] = "Delete the selected set"
+L["SET_APPLY_TOOLTIP"] = "Apply this set as active transmog\n(Only collected appearances will be applied)"
+L["APPLY_HINT"] = "Select an appearance and Shift+Click to apply"

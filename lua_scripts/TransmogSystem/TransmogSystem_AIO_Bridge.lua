@@ -1,5 +1,5 @@
 -- [Author : Thiesant] This script is free, if you bought it you got scammed.
--- v0.1
+-- v0.2
     -- ============================================================================
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -910,6 +910,230 @@ if ENABLE_AIO_BRIDGE then
         end
         
         AIO.Msg():Add("TRANSMOG", "AppearanceCheckBulk", results):Send(player)
+    end
+    
+    -- ============================================================================
+    -- Set Management - Database Functions
+    -- ============================================================================
+    
+    -- Slot name to database column mapping
+    local SLOT_TO_COLUMN = {
+        [0]  = "slot_head",
+        [2]  = "slot_shoulder",
+        [3]  = "slot_shirt",
+        [4]  = "slot_chest",
+        [5]  = "slot_waist",
+        [6]  = "slot_legs",
+        [7]  = "slot_feet",
+        [8]  = "slot_wrist",
+        [9]  = "slot_hands",
+        [14] = "slot_back",
+        [15] = "slot_mainhand",
+        [16] = "slot_offhand",
+        [17] = "slot_ranged",
+        [18] = "slot_tabard",
+    }
+    
+    local COLUMN_TO_SLOT = {}
+    for slot, column in pairs(SLOT_TO_COLUMN) do
+        COLUMN_TO_SLOT[column] = slot
+    end
+    
+    local function GetPlayerSets(accountId)
+        local query = CharDBQuery(string.format(
+            "SELECT set_number, set_name, slot_head, slot_shoulder, slot_back, slot_chest, " ..
+            "slot_shirt, slot_tabard, slot_wrist, slot_hands, slot_waist, slot_legs, slot_feet, " ..
+            "slot_mainhand, slot_offhand, slot_ranged FROM mod_transmog_system_sets WHERE account_id = %d",
+            accountId
+        ))
+        
+        local sets = {}
+        if query then
+            repeat
+                local setNumber = query:GetUInt8(0)
+                local setName = query:GetString(1)
+                local slots = {
+                    [0]  = query:GetUInt32(2),   -- head
+                    [2]  = query:GetUInt32(3),   -- shoulder
+                    [14] = query:GetUInt32(4),   -- back
+                    [4]  = query:GetUInt32(5),   -- chest
+                    [3]  = query:GetUInt32(6),   -- shirt
+                    [18] = query:GetUInt32(7),   -- tabard
+                    [8]  = query:GetUInt32(8),   -- wrist
+                    [9]  = query:GetUInt32(9),   -- hands
+                    [5]  = query:GetUInt32(10),  -- waist
+                    [6]  = query:GetUInt32(11),  -- legs
+                    [7]  = query:GetUInt32(12),  -- feet
+                    [15] = query:GetUInt32(13),  -- mainhand
+                    [16] = query:GetUInt32(14),  -- offhand
+                    [17] = query:GetUInt32(15),  -- ranged
+                }
+                sets[setNumber] = {
+                    name = setName,
+                    slots = slots
+                }
+            until not query:NextRow()
+        end
+        return sets
+    end
+    
+    local function SavePlayerSet(accountId, setNumber, setName, slotData)
+        -- Build the INSERT/REPLACE query
+        local columns = {"account_id", "set_number", "set_name"}
+        local values = {accountId, setNumber, "'" .. setName:gsub("'", "''") .. "'"}
+        
+        -- Add slot columns and values
+        for slot, column in pairs(SLOT_TO_COLUMN) do
+            table.insert(columns, column)
+            local itemId = slotData[slot] or 0
+            table.insert(values, itemId)
+        end
+        
+        local sql = string.format(
+            "REPLACE INTO mod_transmog_system_sets (%s) VALUES (%s)",
+            table.concat(columns, ", "),
+            table.concat(values, ", ")
+        )
+        
+        CharDBExecute(sql)
+    end
+    
+    local function DeletePlayerSet(accountId, setNumber)
+        CharDBExecute(string.format(
+            "DELETE FROM mod_transmog_system_sets WHERE account_id = %d AND set_number = %d",
+            accountId, setNumber
+        ))
+    end
+    
+    -- ============================================================================
+    -- Set Management - AIO Handlers
+    -- ============================================================================
+    
+    -- Request all sets for account
+    TRANSMOG_HANDLER.RequestSets = function(player)
+        local accountId = player:GetAccountId()
+        local sets = GetPlayerSets(accountId)
+        
+        AIO.Msg():Add("TRANSMOG", "SetsData", sets):Send(player)
+    end
+    
+    -- Save a new set or update existing
+    TRANSMOG_HANDLER.SaveSet = function(player, setNumber, setName, slotData)
+        if not setNumber or setNumber < 1 or setNumber > 10 then
+            AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
+            return
+        end
+        
+        if not setName or setName == "" then
+            setName = "Set " .. setNumber
+        end
+        
+        -- Sanitize setName (max 64 chars)
+        setName = setName:sub(1, 64)
+        
+        local accountId = player:GetAccountId()
+        
+        -- Convert slot data keys to numbers if needed
+        local convertedSlotData = {}
+        if slotData then
+            for slot, itemId in pairs(slotData) do
+                local slotNum = tonumber(slot)
+                if slotNum and itemId and itemId > 0 then
+                    convertedSlotData[slotNum] = itemId
+                end
+            end
+        end
+        
+        SavePlayerSet(accountId, setNumber, setName, convertedSlotData)
+        
+        AIO.Msg():Add("TRANSMOG", "SetSaved", {
+            setNumber = setNumber,
+            setName = setName,
+            slots = convertedSlotData
+        }):Send(player)
+    end
+    
+    -- Load a set (preview only, returns data to client)
+    TRANSMOG_HANDLER.LoadSet = function(player, setNumber)
+        if not setNumber or setNumber < 1 or setNumber > 10 then
+            AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
+            return
+        end
+        
+        local accountId = player:GetAccountId()
+        local sets = GetPlayerSets(accountId)
+        
+        if not sets[setNumber] then
+            AIO.Msg():Add("TRANSMOG", "SetError", "Set not found"):Send(player)
+            return
+        end
+        
+        AIO.Msg():Add("TRANSMOG", "SetLoaded", {
+            setNumber = setNumber,
+            setName = sets[setNumber].name,
+            slots = sets[setNumber].slots
+        }):Send(player)
+    end
+    
+    -- Delete a set
+    TRANSMOG_HANDLER.DeleteSet = function(player, setNumber)
+        if not setNumber or setNumber < 1 or setNumber > 10 then
+            AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
+            return
+        end
+        
+        local accountId = player:GetAccountId()
+        DeletePlayerSet(accountId, setNumber)
+        
+        AIO.Msg():Add("TRANSMOG", "SetDeleted", { setNumber = setNumber }):Send(player)
+    end
+    
+    -- Apply a set (only items in collection will be applied)
+    TRANSMOG_HANDLER.ApplySet = function(player, setNumber)
+        if not setNumber or setNumber < 1 or setNumber > 10 then
+            AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
+            return
+        end
+        
+        local accountId = player:GetAccountId()
+        local guid = player:GetGUIDLow()
+        local sets = GetPlayerSets(accountId)
+        
+        if not sets[setNumber] then
+            AIO.Msg():Add("TRANSMOG", "SetError", "Set not found"):Send(player)
+            return
+        end
+        
+        local setData = sets[setNumber]
+        local appliedSlots = {}
+        local skippedCount = 0
+        
+        for slot, itemId in pairs(setData.slots) do
+            if itemId and itemId > 0 then
+                -- Check if player has this appearance in collection
+                if HasAppearance(accountId, itemId) then
+                    -- Save to active transmogs
+                    SaveActiveTransmog(guid, slot, itemId)
+                    
+                    -- Apply visual if item equipped
+                    local equippedItem = player:GetItemByPos(255, slot)
+                    if equippedItem and ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
+                        ApplyTransmogVisual(player, slot, itemId)
+                    end
+                    
+                    appliedSlots[slot] = itemId
+                else
+                    skippedCount = skippedCount + 1
+                end
+            end
+        end
+        
+        AIO.Msg():Add("TRANSMOG", "SetApplied", {
+            setNumber = setNumber,
+            setName = setData.name,
+            appliedSlots = appliedSlots,
+            skippedCount = skippedCount
+        }):Send(player)
     end
    
     -- ============================================================================

@@ -151,9 +151,18 @@ local itemsPerPage = 15
 -- Track selected items per slot (cyan border selection)
 local slotSelectedItems = {}  -- key: slotName, value: itemId
 
+-- ============================================================================
+-- Set Management Data
+-- ============================================================================
+
+local transmogSets = {}  -- Cached sets from server: { [setNumber] = { name = "...", slots = {...} } }
+local MAX_SETS = 10
+local selectedSetNumber = nil  -- Track currently selected set number
+
 -- Forward declarations for functions used by AIO handlers
 local UpdatePreviewGrid
 local UpdateSlotButtonIcons
+local UpdateSetDropdown
 
 -- ============================================================================
 -- C_Timer Polyfill
@@ -207,6 +216,38 @@ end
 
 local function RequestSlotItemsFromServer(slotId, subclass, quality)
     AIO.Msg():Add("TRANSMOG", "RequestSlotItems", slotId, subclass, quality):Send()
+end
+
+-- ============================================================================
+-- Set Management Functions
+-- ============================================================================
+
+local function RequestSetsFromServer()
+    AIO.Msg():Add("TRANSMOG", "RequestSets"):Send()
+end
+
+local function SaveSetToServer(setNumber, setName)
+    -- Gather currently selected items from slotSelectedItems
+    local slotData = {}
+    for slotName, itemId in pairs(slotSelectedItems) do
+        local equipSlot = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+        if equipSlot and itemId then
+            slotData[equipSlot] = itemId
+        end
+    end
+    AIO.Msg():Add("TRANSMOG", "SaveSet", setNumber, setName, slotData):Send()
+end
+
+local function LoadSetFromServer(setNumber)
+    AIO.Msg():Add("TRANSMOG", "LoadSet", setNumber):Send()
+end
+
+local function DeleteSetFromServer(setNumber)
+    AIO.Msg():Add("TRANSMOG", "DeleteSet", setNumber):Send()
+end
+
+local function ApplySetToServer(setNumber)
+    AIO.Msg():Add("TRANSMOG", "ApplySet", setNumber):Send()
 end
 
 -- ============================================================================
@@ -415,6 +456,116 @@ TRANSMOG_HANDLER.SlotItems = function(player, data)
             mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages))
         end
     end
+end
+
+-- ============================================================================
+-- Set Management AIO Handlers
+-- ============================================================================
+
+TRANSMOG_HANDLER.SetsData = function(player, data)
+    if not data then return end
+    transmogSets = data or {}
+    
+    -- Update dropdown if it exists
+    C_Timer.After(0, function()
+        if UpdateSetDropdown then
+            UpdateSetDropdown()
+        end
+    end)
+end
+
+TRANSMOG_HANDLER.SetSaved = function(player, data)
+    if not data then return end
+    
+    -- Update local cache
+    transmogSets[data.setNumber] = {
+        name = data.setName,
+        slots = data.slots or {}
+    }
+    
+    print(string.format(L["SET_SAVED"], data.setName))
+    
+    -- Update dropdown
+    if UpdateSetDropdown then
+        UpdateSetDropdown()
+    end
+end
+
+TRANSMOG_HANDLER.SetLoaded = function(player, data)
+    if not data then return end
+    
+    local setData = data.slots or {}
+    
+    -- Clear current selections
+    slotSelectedItems = {}
+    
+    -- Apply loaded set items to preview and selection
+    for slotName, config in pairs(SLOT_CONFIG) do
+        local equipSlot = config.equipSlot
+        local itemId = setData[equipSlot]
+        if itemId and itemId > 0 then
+            slotSelectedItems[slotName] = itemId
+        end
+    end
+    
+    -- Update dressing room model with loaded items
+    -- Use mainFrame.dressingRoom since dressingRoom variable may not be in scope yet
+    local dr = mainFrame and mainFrame.dressingRoom
+    if dr and dr.model then
+        dr.model:SetUnit("player")  -- Reset model first
+        dr.model:Undress()
+        -- Small delay to ensure model is ready
+        C_Timer.After(0.1, function()
+            for slotName, itemId in pairs(slotSelectedItems) do
+                if itemId then
+                    dr.model:TryOn(itemId)
+                end
+            end
+        end)
+    end
+    
+    -- Update grid to show cyan highlights
+    UpdatePreviewGrid()
+    
+    print(string.format(L["SET_LOADED"], data.setName or "Set"))
+end
+
+TRANSMOG_HANDLER.SetDeleted = function(player, data)
+    if not data then return end
+    
+    -- Clear selection if this was the selected set
+    if selectedSetNumber == data.setNumber then
+        selectedSetNumber = nil
+    end
+    
+    transmogSets[data.setNumber] = nil
+    print(string.format(L["SET_DELETED"], data.setNumber))
+    
+    -- Update dropdown
+    if UpdateSetDropdown then
+        UpdateSetDropdown()
+    end
+end
+
+TRANSMOG_HANDLER.SetApplied = function(player, data)
+    if not data then return end
+    
+    -- Update active transmogs with applied set
+    if data.appliedSlots then
+        for slot, itemId in pairs(data.appliedSlots) do
+            activeTransmogs[slot] = itemId
+        end
+    end
+    
+    print(string.format(L["SET_APPLIED"], data.setName or "Set"))
+    
+    -- Update UI
+    UpdateSlotButtonIcons()
+    UpdatePreviewGrid()
+end
+
+TRANSMOG_HANDLER.SetError = function(player, errorMsg)
+    print(string.format("|cffff0000[Transmog]|r %s", errorMsg or L["SET_ERROR"]))
 end
 
 -- ============================================================================
@@ -1476,6 +1627,203 @@ local function CreateDressingRoom(parent)
 end
 
 -- ============================================================================
+-- Set Management UI
+-- ============================================================================
+
+local setDropdown
+
+local function CreateSetDropdown(parent)
+    local dropdown = CreateFrame("Frame", "TransmogSetDropdown", parent, "UIDropDownMenuTemplate")
+    UIDropDownMenu_SetWidth(dropdown, 120)
+    return dropdown
+end
+
+UpdateSetDropdown = function()
+    if not setDropdown then return end
+    
+    UIDropDownMenu_Initialize(setDropdown, function(self, level)
+        -- Add "New Set" option
+        local newInfo = UIDropDownMenu_CreateInfo()
+        newInfo.text = L["SET_NEW"] or "New Set..."
+        newInfo.value = 0
+        newInfo.func = function()
+            -- Show dialog to create new set
+            StaticPopup_Show("TRANSMOG_SAVE_SET")
+            CloseDropDownMenus()
+        end
+        UIDropDownMenu_AddButton(newInfo, level)
+        
+        -- Add existing sets
+        for i = 1, MAX_SETS do
+            local setData = transmogSets[i]
+            if setData then
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = setData.name or string.format(L["SET_DEFAULT_NAME"] or "Set %d", i)
+                info.value = i
+                info.func = function(self)
+                    selectedSetNumber = self.value  -- Track selected set
+                    LoadSetFromServer(self.value)
+                    UIDropDownMenu_SetText(setDropdown, self:GetText())
+                    CloseDropDownMenus()
+                end
+                info.checked = (selectedSetNumber == i)
+                UIDropDownMenu_AddButton(info, level)
+            end
+        end
+    end)
+    
+    -- Update text based on selected set
+    if selectedSetNumber and transmogSets[selectedSetNumber] then
+        UIDropDownMenu_SetText(setDropdown, transmogSets[selectedSetNumber].name or string.format("Set %d", selectedSetNumber))
+    else
+        UIDropDownMenu_SetText(setDropdown, L["SET_SELECT"] or "Select Set")
+    end
+end
+
+-- Static popup for saving sets
+StaticPopupDialogs["TRANSMOG_SAVE_SET"] = {
+    text = L["SET_SAVE_PROMPT"] or "Enter set name:",
+    button1 = ACCEPT,
+    button2 = CANCEL,
+    hasEditBox = true,
+    maxLetters = 32,
+    OnAccept = function(self)
+        local setName = self.editBox:GetText()
+        if setName and setName ~= "" then
+            -- Find first available slot
+            local setNumber = nil
+            for i = 1, MAX_SETS do
+                if not transmogSets[i] then
+                    setNumber = i
+                    break
+                end
+            end
+            
+            if not setNumber then
+                print(L["SET_FULL"] or "|cffff0000[Transmog]|r All set slots are full. Delete a set first.")
+                return
+            end
+            
+            SaveSetToServer(setNumber, setName)
+        end
+    end,
+    EditBoxOnEnterPressed = function(self)
+        local parent = self:GetParent()
+        StaticPopupDialogs["TRANSMOG_SAVE_SET"].OnAccept(parent)
+        parent:Hide()
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+-- Static popup for deleting sets
+StaticPopupDialogs["TRANSMOG_DELETE_SET"] = {
+    text = L["SET_DELETE_CONFIRM"] or "Delete this set?",
+    button1 = YES,
+    button2 = NO,
+    OnAccept = function(self, data)
+        if data then
+            DeleteSetFromServer(data)
+        end
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+local function CreateSetControls(parent, dressingRoomFrame)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetSize(280, 30)
+    container:SetPoint("TOP", dressingRoomFrame, "BOTTOM", 0, -5)
+    
+    -- Set dropdown
+    setDropdown = CreateSetDropdown(container)
+    setDropdown:SetPoint("LEFT", container, "LEFT", -10, 0)
+    
+    -- Save button
+    local saveBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+    saveBtn:SetSize(45, 22)
+    saveBtn:SetPoint("LEFT", setDropdown, "RIGHT", -5, 2)
+    saveBtn:SetText(L["SET_SAVE"] or "Save")
+    saveBtn:SetScript("OnClick", function()
+        -- Check if any items are selected
+        local hasSelection = false
+        for _, itemId in pairs(slotSelectedItems) do
+            if itemId then
+                hasSelection = true
+                break
+            end
+        end
+        
+        if not hasSelection then
+            print(L["SET_NO_SELECTION"] or "|cffff0000[Transmog]|r No items selected. Click items in the preview to select them first.")
+            return
+        end
+        
+        StaticPopup_Show("TRANSMOG_SAVE_SET")
+    end)
+    saveBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText(L["SET_SAVE_TOOLTIP"] or "Save selected items as a new set")
+        GameTooltip:Show()
+    end)
+    saveBtn:SetScript("OnLeave", GameTooltip_Hide)
+    
+    -- Delete button
+    local deleteBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+    deleteBtn:SetSize(45, 22)
+    deleteBtn:SetPoint("LEFT", saveBtn, "RIGHT", 2, 0)
+    deleteBtn:SetText(L["SET_DELETE"] or "Del")
+    deleteBtn:SetScript("OnClick", function()
+        -- Use our tracked selectedSetNumber instead of UIDropDownMenu_GetSelectedValue
+        if selectedSetNumber and selectedSetNumber > 0 and transmogSets[selectedSetNumber] then
+            local dialog = StaticPopup_Show("TRANSMOG_DELETE_SET")
+            if dialog then
+                dialog.data = selectedSetNumber
+            end
+        else
+            print(L["SET_SELECT_FIRST"] or "|cffff0000[Transmog]|r Select a set first.")
+        end
+    end)
+    deleteBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText(L["SET_DELETE_TOOLTIP"] or "Delete the selected set")
+        GameTooltip:Show()
+    end)
+    deleteBtn:SetScript("OnLeave", GameTooltip_Hide)
+    
+    -- Apply button
+    local applyBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
+    applyBtn:SetSize(50, 22)
+    applyBtn:SetPoint("LEFT", deleteBtn, "RIGHT", 2, 0)
+    applyBtn:SetText(L["SET_APPLY"] or "Apply")
+    applyBtn:SetScript("OnClick", function()
+        -- Use our tracked selectedSetNumber instead of UIDropDownMenu_GetSelectedValue
+        if selectedSetNumber and selectedSetNumber > 0 and transmogSets[selectedSetNumber] then
+            ApplySetToServer(selectedSetNumber)
+        else
+            print(L["SET_SELECT_FIRST"] or "|cffff0000[Transmog]|r Select a set first.")
+        end
+    end)
+    applyBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText(L["SET_APPLY_TOOLTIP"] or "Apply this set as active transmog\n(Only collected appearances will be applied)")
+        GameTooltip:Show()
+    end)
+    applyBtn:SetScript("OnLeave", GameTooltip_Hide)
+    
+    container.dropdown = setDropdown
+    container.saveBtn = saveBtn
+    container.deleteBtn = deleteBtn
+    container.applyBtn = applyBtn
+    
+    return container
+end
+
+-- ============================================================================
 -- Search Bar Functions
 -- ============================================================================
 
@@ -1718,7 +2066,13 @@ local function CreateMainFrame()
     applyBtn:SetScript("OnClick", function()
         -- Apply currently selected transmog
         print("Select an appearance and Shift+Click to apply")
+        print(L["APPLY_HINT"] or "Select an appearance and Shift+Click to apply")
     end)
+    
+    -- Set management controls (below dressing room buttons)
+    local setControls = CreateSetControls(frame, dressingRoom)
+    setControls:SetPoint("TOP", resetBtn, "BOTTOM", 70, -10)
+    frame.setControls = setControls
     
     -- Add search bar after preview grid
     local searchBar = CreateSearchBar(frame, previewGrid)
@@ -1858,62 +2212,6 @@ local function CreateCharacterFrameTab()
 end
 
 -- ============================================================================
--- Minimap Button
--- ============================================================================
-
-local function CreateMinimapButton()
-    local button = CreateFrame("Button", "TransmogMinimapButton", Minimap)
-    button:SetSize(32, 32)
-    button:SetFrameStrata("MEDIUM")
-    button:SetPoint("TOPLEFT", Minimap, "TOPLEFT", 0, 0)
-    button:SetMovable(true)
-    button:SetClampedToScreen(true)
-    
-    button:SetNormalTexture("Interface\\Icons\\INV_Chest_Cloth_17")
-    button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-    
-    local overlay = button:CreateTexture(nil, "OVERLAY")
-    overlay:SetSize(53, 53)
-    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-    overlay:SetPoint("TOPLEFT")
-    
-    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    button:SetScript("OnClick", function(self, btn)
-        if btn == "LeftButton" then
-            if mainFrame:IsShown() then
-                mainFrame:Hide()
-				PlaySound("igCharacterInfoClose")
-            else
-                mainFrame:Show()
-				PlaySound("igCharacterInfoOpen")
-            end
-        elseif btn == "RightButton" then
-            -- TODO: Options menu
-        end
-    end)
-    
-    button:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:AddLine(L["MINIMAP_BUTTON_TITLE"])
-        GameTooltip:AddLine(L["MINIMAP_TOOLTIP"], 1, 1, 1)
-        GameTooltip:Show()
-    end)
-    
-    button:SetScript("OnLeave", function()
-        GameTooltip:Hide()
-    end)
-    
-    -- Minimap button positioning
-    local angle = TransmogDB.minimapAngle or 45
-    local rad = math.rad(angle)
-    local x = math.cos(rad) * 80
-    local y = math.sin(rad) * 80
-    button:SetPoint("CENTER", Minimap, "CENTER", x, y)
-    
-    return button
-end
-
--- ============================================================================
 -- Initialization
 -- ============================================================================
 
@@ -1933,11 +2231,11 @@ initFrame:SetScript("OnEvent", function(self, event)
         C_Timer.After(2, function()
             RequestCollectionFromServer()
             RequestActiveTransmogsFromServer()
+            RequestSetsFromServer()
         end)
         
         mainFrame = CreateMainFrame()
         CreateCharacterFrameTab()
-        CreateMinimapButton()
         
         currentSlot = "Head"
         currentSubclass = slotSelectedSubclass["Head"] or "All"
@@ -1951,6 +2249,7 @@ initFrame:SetScript("OnEvent", function(self, event)
         mainFrame:SetScript("OnShow", function()
             UpdateSubclassDropdown()
             UpdateQualityDropdown()
+            UpdateSetDropdown()
             
             -- If search is active, show search results
             if searchActive and lastSearchText ~= "" then
