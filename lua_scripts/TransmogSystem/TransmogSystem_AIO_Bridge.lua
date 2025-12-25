@@ -129,6 +129,25 @@ if ENABLE_AIO_BRIDGE then
     local AIO = AIO or require("AIO")
     
     -- ============================================================================
+    -- SERVER STARTUP CACHE SYSTEM
+    -- ============================================================================
+    -- This cache is built ONCE on server startup and shared with all clients.
+    -- Clients store this cache locally with a version number.
+    -- If server version matches client version, no retransmission needed.
+    -- ============================================================================
+
+    -- Global cache storage (populated on server startup)
+    local SERVER_ITEM_CACHE = {
+        version = 0,              -- Cache version (changes when server restarts)
+        isReady = false,          -- Flag indicating cache is built
+        bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality}, ... }
+        enchants = {},            -- All enchant visuals
+    }
+
+    -- Client cache versions (tracks what version each client has)
+    local ClientCacheVersions = {}  -- [accountId] = {items = version, enchants = version}
+    
+    -- ============================================================================
     -- Transmog Slot Definitions
     -- ============================================================================
     
@@ -236,6 +255,109 @@ if ENABLE_AIO_BRIDGE then
         [25] = 17,  -- INVTYPE_THROWN
         [26] = 17,  -- INVTYPE_RANGEDRIGHT
     }
+    
+    -- ============================================================================
+    -- SERVER CACHE INITIALIZATION (Async)
+    -- ============================================================================
+    -- Build the full item cache on server startup using async queries
+    -- This happens ONCE and the cache is shared with all clients
+    -- ============================================================================
+    
+    -- Forward declaration for BuildServerEnchantCacheAsync
+    local BuildServerEnchantCacheAsync
+    
+    local function BuildServerItemCacheAsync()
+        print("[mod-transmog-system] Building server item cache (async)...")
+        
+        -- Generate cache version based on server start time
+        SERVER_ITEM_CACHE.version = os.time()
+        SERVER_ITEM_CACHE.bySlot = {}
+        
+        -- Initialize all slot tables
+        for slotId, _ in pairs(SLOT_INV_TYPES) do
+            SERVER_ITEM_CACHE.bySlot[slotId] = {}
+        end
+        
+        -- Build quality filter for allowed qualities
+        local qualityList = {}
+        for q, allowed in pairs(ALLOWED_QUALITIES) do
+            if allowed then
+                table.insert(qualityList, q)
+            end
+        end
+        local qualityFilter = table.concat(qualityList, ",")
+        
+        -- Query ALL transmog-eligible items at once (async)
+        local sql = string.format(
+            "SELECT entry, class, subclass, InventoryType, Quality FROM item_template " ..
+            "WHERE displayid > 0 AND Quality IN (%s) ORDER BY entry",
+            qualityFilter
+        )
+        
+        WorldDBQueryAsync(sql, function(Q)
+            if Q then
+                local count = 0
+                repeat
+                    local itemId = Q:GetUInt32(0)
+                    local itemClass = Q:GetUInt8(1)
+                    local itemSubclass = Q:GetUInt8(2)
+                    local invType = Q:GetUInt8(3)
+                    local quality = Q:GetUInt8(4)
+                    
+                    -- Map inventory type to slot
+                    local slotId = INV_TYPE_TO_SLOT[invType]
+                    
+                    -- Skip blacklisted items and items without a valid slot
+                    if slotId and not IsItemBlacklisted(itemId) then
+                        -- Store compact item data: {itemId, class, subclass, quality}
+                        table.insert(SERVER_ITEM_CACHE.bySlot[slotId], {
+                            itemId,
+                            itemClass,
+                            itemSubclass,
+                            quality
+                        })
+                        count = count + 1
+                    end
+                until not Q:NextRow()
+                
+                print(string.format("[mod-transmog-system] Cached %d items across all slots", count))
+                
+                -- Now load enchants (also async)
+                BuildServerEnchantCacheAsync()
+            else
+                print("[mod-transmog-system] ERROR: Failed to build item cache!")
+                SERVER_ITEM_CACHE.isReady = false
+            end
+        end)
+    end
+    
+    -- Define BuildServerEnchantCacheAsync (declared above)
+    BuildServerEnchantCacheAsync = function()
+        print("[mod-transmog-system] Building enchant cache (async)...")
+        
+        CharDBQueryAsync(
+            "SELECT id, item_visual, name_enUS, icon FROM mod_transmog_system_enchantment ORDER BY id",
+            function(Q)
+                SERVER_ITEM_CACHE.enchants = {}
+                if Q then
+                    repeat
+                        table.insert(SERVER_ITEM_CACHE.enchants, {
+                            id = Q:GetUInt32(0),
+                            itemVisual = Q:GetUInt32(1),
+                            name = Q:GetString(2),
+                            icon = Q:GetString(3)
+                        })
+                    until not Q:NextRow()
+                    
+                    print(string.format("[mod-transmog-system] Cached %d enchant visuals", #SERVER_ITEM_CACHE.enchants))
+                end
+                
+                -- Mark cache as ready
+                SERVER_ITEM_CACHE.isReady = true
+                print(string.format("[mod-transmog-system] Server cache ready! Version: %d", SERVER_ITEM_CACHE.version))
+            end
+        )
+    end
        
     -- Helper function to get item template from world database
     local itemTemplateCache = {}
@@ -289,12 +411,41 @@ if ENABLE_AIO_BRIDGE then
         return items
     end
     
+    -- Async version of GetPlayerCollection
+    local function GetPlayerCollectionAsync(accountId, callback)
+        CharDBQueryAsync(
+            string.format("SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d", accountId),
+            function(Q)
+                local items = {}
+                if Q then
+                    repeat
+                        local itemId = Q:GetUInt32(0)
+                        if not IsItemBlacklisted(itemId) then
+                            table.insert(items, itemId)
+                        end
+                    until not Q:NextRow()
+                end
+                callback(items)
+            end
+        )
+    end
+    
     local function HasAppearance(accountId, itemId)
         local query = CharDBQuery(string.format(
             "SELECT 1 FROM mod_transmog_system_collection WHERE account_id = %d AND item_id = %d",
             accountId, itemId
         ))
         return query ~= nil
+    end
+    
+    -- Async version of HasAppearance
+    local function HasAppearanceAsync(accountId, itemId, callback)
+        CharDBQueryAsync(
+            string.format("SELECT 1 FROM mod_transmog_system_collection WHERE account_id = %d AND item_id = %d", accountId, itemId),
+            function(Q)
+                callback(Q ~= nil)
+            end
+        )
     end
 
     local function GetCollectionForSlotFiltered(accountId, slotId, subclassName, quality)
@@ -590,6 +741,24 @@ if ENABLE_AIO_BRIDGE then
             until not query:NextRow()
         end
         return transmogs
+    end
+    
+    -- Async version of GetActiveTransmogs
+    local function GetActiveTransmogsAsync(guid, callback)
+        CharDBQueryAsync(
+            string.format("SELECT slot, item_id FROM mod_transmog_system_active WHERE guid = %d", guid),
+            function(Q)
+                local transmogs = {}
+                if Q then
+                    repeat
+                        local slot = Q:GetUInt8(0)
+                        local itemId = Q:GetUInt32(1)
+                        transmogs[slot] = itemId
+                    until not Q:NextRow()
+                end
+                callback(transmogs)
+            end
+        )
     end
     
     local function SaveActiveTransmog(guid, slot, itemId)
@@ -1057,10 +1226,231 @@ if ENABLE_AIO_BRIDGE then
     _G.TransmogAddToCollection = AddToCollection
     
     -- ============================================================================
+    -- Helper function for safe async messaging
+    -- ============================================================================
+    -- When using async queries, the player object may become invalid by the time
+    -- the callback executes. This helper stores player name and retrieves fresh
+    -- reference in the callback.
+    -- ============================================================================
+    
+    local function SafeSendToPlayer(playerName, msgBuilder)
+        -- Get fresh player reference by name
+        local player = GetPlayerByName(playerName)
+        if player then
+            msgBuilder:Send(player)
+        end
+        -- If player is nil, they logged off - silently ignore
+    end
+    
+    -- ============================================================================
     -- AIO Handlers - Matching Client Format
     -- ============================================================================
     
     local TRANSMOG_HANDLER = AIO.AddHandlers("TRANSMOG", {})
+    
+    -- ============================================================================
+    -- NEW: Cache-based handlers for improved performance
+    -- ============================================================================
+    
+    -- Request server cache version (client checks if it needs to download cache)
+    TRANSMOG_HANDLER.GetCacheVersion = function(player)
+        AIO.Msg():Add("TRANSMOG", "CacheVersion", {
+            version = SERVER_ITEM_CACHE.version,
+            isReady = SERVER_ITEM_CACHE.isReady
+        }):Send(player)
+    end
+    
+    -- Request FULL item cache (ALL slots at once)
+    -- This is called once on login - client stores in SavedVariables
+    TRANSMOG_HANDLER.RequestFullCache = function(player, clientVersion)
+        if not SERVER_ITEM_CACHE.isReady then
+            AIO.Msg():Add("TRANSMOG", "FullCacheNotReady", {}):Send(player)
+            return
+        end
+        
+        -- Check if client already has current version
+        if clientVersion and clientVersion == SERVER_ITEM_CACHE.version then
+            AIO.Msg():Add("TRANSMOG", "FullCacheUpToDate", { 
+                version = SERVER_ITEM_CACHE.version 
+            }):Send(player)
+            return
+        end
+        
+        print(string.format("[Transmog] Sending full cache to %s (client version: %s, server version: %d)", 
+            player:GetName(), tostring(clientVersion), SERVER_ITEM_CACHE.version))
+        
+        -- Count total items across all slots for chunking
+        local allItems = {}  -- { {slotId, itemId, class, subclass, quality}, ... }
+        for slotId, items in pairs(SERVER_ITEM_CACHE.bySlot) do
+            for _, itemData in ipairs(items) do
+                -- itemData is {itemId, class, subclass, quality}
+                table.insert(allItems, {
+                    slotId,
+                    itemData[1],  -- itemId
+                    itemData[2],  -- class
+                    itemData[3],  -- subclass
+                    itemData[4]   -- quality
+                })
+            end
+        end
+        
+        -- Send in chunks of 200
+        local chunkSize = 200
+        local totalChunks = math.ceil(#allItems / chunkSize)
+        if totalChunks == 0 then totalChunks = 1 end
+        
+        for chunk = 1, totalChunks do
+            local startIdx = (chunk - 1) * chunkSize + 1
+            local endIdx = math.min(chunk * chunkSize, #allItems)
+            local chunkItems = {}
+            
+            for i = startIdx, endIdx do
+                table.insert(chunkItems, allItems[i])
+            end
+            
+            AIO.Msg():Add("TRANSMOG", "FullCacheData", {
+                version = SERVER_ITEM_CACHE.version,
+                chunk = chunk,
+                totalChunks = totalChunks,
+                items = chunkItems
+            }):Send(player)
+        end
+        
+        print(string.format("[Transmog] Sent %d items in %d chunks to %s", 
+            #allItems, totalChunks, player:GetName()))
+    end
+    
+    -- Request full item cache for a specific slot (only sent if client cache is outdated)
+    -- clientVersion: the version the client currently has (0 if none)
+    TRANSMOG_HANDLER.RequestSlotCache = function(player, slotId, clientVersion)
+        if not SERVER_ITEM_CACHE.isReady then
+            AIO.Msg():Add("TRANSMOG", "SlotCacheNotReady", { slotId = slotId }):Send(player)
+            return
+        end
+        
+        -- Check if client already has current version
+        if clientVersion and clientVersion == SERVER_ITEM_CACHE.version then
+            AIO.Msg():Add("TRANSMOG", "SlotCacheUpToDate", { 
+                slotId = slotId, 
+                version = SERVER_ITEM_CACHE.version 
+            }):Send(player)
+            return
+        end
+        
+        local items = SERVER_ITEM_CACHE.bySlot[slotId] or {}
+        
+        -- Send in chunks of 100 (each item is compact: {itemId, class, subclass, quality})
+        local chunkSize = 100
+        local totalChunks = math.ceil(#items / chunkSize)
+        if totalChunks == 0 then totalChunks = 1 end
+        
+        for chunk = 1, totalChunks do
+            local startIdx = (chunk - 1) * chunkSize + 1
+            local endIdx = math.min(chunk * chunkSize, #items)
+            local chunkItems = {}
+            
+            for i = startIdx, endIdx do
+                -- Items stored as {itemId, class, subclass, quality}
+                table.insert(chunkItems, items[i])
+            end
+            
+            AIO.Msg():Add("TRANSMOG", "SlotCacheData", {
+                slotId = slotId,
+                version = SERVER_ITEM_CACHE.version,
+                chunk = chunk,
+                totalChunks = totalChunks,
+                items = chunkItems
+            }):Send(player)
+        end
+    end
+    
+    -- Request full enchant cache (only sent if client cache is outdated)
+    TRANSMOG_HANDLER.RequestEnchantCache = function(player, clientVersion)
+        if not SERVER_ITEM_CACHE.isReady then
+            AIO.Msg():Add("TRANSMOG", "EnchantCacheNotReady", {}):Send(player)
+            return
+        end
+        
+        -- Check if client already has current version
+        if clientVersion and clientVersion == SERVER_ITEM_CACHE.version then
+            AIO.Msg():Add("TRANSMOG", "EnchantCacheUpToDate", { 
+                version = SERVER_ITEM_CACHE.version 
+            }):Send(player)
+            return
+        end
+        
+        local enchants = SERVER_ITEM_CACHE.enchants
+        
+        -- Send in chunks of 30
+        local chunkSize = 30
+        local totalChunks = math.ceil(#enchants / chunkSize)
+        if totalChunks == 0 then totalChunks = 1 end
+        
+        for chunk = 1, totalChunks do
+            local startIdx = (chunk - 1) * chunkSize + 1
+            local endIdx = math.min(chunk * chunkSize, #enchants)
+            local chunkEnchants = {}
+            
+            for i = startIdx, endIdx do
+                table.insert(chunkEnchants, enchants[i])
+            end
+            
+            AIO.Msg():Add("TRANSMOG", "EnchantCacheData", {
+                version = SERVER_ITEM_CACHE.version,
+                chunk = chunk,
+                totalChunks = totalChunks,
+                enchants = chunkEnchants
+            }):Send(player)
+        end
+    end
+    
+    -- Request player's collection status (small payload - just item IDs they own)
+    -- This is the only player-specific data that needs to be sent frequently
+    TRANSMOG_HANDLER.RequestCollectionStatus = function(player)
+        local accountId = player:GetAccountId()
+        local playerName = player:GetName()  -- Store name for callback
+        
+        -- Use async query for collection
+        CharDBQueryAsync(
+            string.format("SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d", accountId),
+            function(Q)
+                local items = {}
+                if Q then
+                    repeat
+                        local itemId = Q:GetUInt32(0)
+                        if not IsItemBlacklisted(itemId) then
+                            table.insert(items, itemId)
+                        end
+                    until not Q:NextRow()
+                end
+                
+                -- Send in chunks of 200 (just item IDs, very compact)
+                local chunkSize = 200
+                local totalChunks = math.ceil(#items / chunkSize)
+                if totalChunks == 0 then totalChunks = 1 end
+                
+                for chunk = 1, totalChunks do
+                    local startIdx = (chunk - 1) * chunkSize + 1
+                    local endIdx = math.min(chunk * chunkSize, #items)
+                    local chunkItems = {}
+                    
+                    for i = startIdx, endIdx do
+                        table.insert(chunkItems, items[i])
+                    end
+                    
+                    SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "CollectionStatus", {
+                        chunk = chunk,
+                        totalChunks = totalChunks,
+                        items = chunkItems
+                    }))
+                end
+            end
+        )
+    end
+    
+    -- ============================================================================
+    -- Legacy Handlers (kept for backwards compatibility)
+    -- ============================================================================
     
     -- Request full collection
     TRANSMOG_HANDLER.RequestCollection = function(player)
@@ -1274,16 +1664,20 @@ if ENABLE_AIO_BRIDGE then
         }):Send(player)
     end
     
-    -- Request active transmogs
+    -- Request active transmogs (async version)
     TRANSMOG_HANDLER.RequestActiveTransmogs = function(player)
         local guid = player:GetGUIDLow()
-        local transmogs = GetActiveTransmogs(guid)
+        local playerName = player:GetName()  -- Store name for callback
         
-        AIO.Msg():Add("TRANSMOG", "ActiveTransmogs", transmogs):Send(player)
+        GetActiveTransmogsAsync(guid, function(transmogs)
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "ActiveTransmogs", transmogs))
+        end)
     end
     
     -- Request items for specific slot with subclass, quality, and collection filter
     -- collectionFilter: "All", "Collected", "Uncollected"
+    -- NOTE: This is the LEGACY handler kept for backwards compatibility
+    -- New clients should use RequestSlotCache + RequestCollectionStatus for better performance
     TRANSMOG_HANDLER.RequestSlotItems = function(player, slotId, subclass, quality, collectionFilter)
         if slotId == nil then
             print("[Transmog Server] RequestSlotItems received nil slotId")
@@ -1394,37 +1788,86 @@ if ENABLE_AIO_BRIDGE then
         AIO.Msg():Add("TRANSMOG", "Removed", slotId):Send(player)
     end
     
-    -- Check if appearance is collected and eligible for transmog
+    -- Check if appearance is collected and eligible for transmog (async version)
     TRANSMOG_HANDLER.CheckAppearance = function(player, itemId)
         local accountId = player:GetAccountId()
+        local playerName = player:GetName()  -- Store name for callback
         local eligible = CanTransmogItem(itemId)
-        local collected = eligible and HasAppearance(accountId, itemId) or false
         
-        AIO.Msg():Add("TRANSMOG", "AppearanceCheck", {
-            itemId = itemId,
-            eligible = eligible,
-            collected = collected
-        }):Send(player)
-    end
-    
-    -- Bulk check appearances
-    TRANSMOG_HANDLER.CheckAppearances = function(player, itemIds)
-        local accountId = player:GetAccountId()
-        local results = {}
-        
-        for _, itemId in ipairs(itemIds) do
-            results[itemId] = HasAppearance(accountId, itemId)
+        if not eligible then
+            AIO.Msg():Add("TRANSMOG", "AppearanceCheck", {
+                itemId = itemId,
+                eligible = false,
+                collected = false
+            }):Send(player)
+            return
         end
         
-        AIO.Msg():Add("TRANSMOG", "AppearanceCheckBulk", results):Send(player)
+        HasAppearanceAsync(accountId, itemId, function(collected)
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "AppearanceCheck", {
+                itemId = itemId,
+                eligible = eligible,
+                collected = collected
+            }))
+        end)
+    end
+    
+    -- Bulk check appearances (async version)
+    TRANSMOG_HANDLER.CheckAppearances = function(player, itemIds)
+        local accountId = player:GetAccountId()
+        local playerName = player:GetName()  -- Store name for callback
+        
+        -- Get all collected items for this account async
+        GetPlayerCollectionAsync(accountId, function(collectionList)
+            -- Convert to set for O(1) lookup
+            local collectionSet = {}
+            for _, itemId in ipairs(collectionList) do
+                collectionSet[itemId] = true
+            end
+            
+            local results = {}
+            for _, itemId in ipairs(itemIds) do
+                results[itemId] = collectionSet[itemId] == true
+            end
+            
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "AppearanceCheckBulk", results))
+        end)
     end
     
     -- ============================================================================
     -- Enchantment Transmog - AIO Handlers
     -- ============================================================================
     
-    -- Request all available enchant visuals (sent from server database)
+    -- Request all available enchant visuals (uses server cache if ready)
     TRANSMOG_HANDLER.RequestEnchantCollection = function(player)
+        -- Use server cache if available
+        if SERVER_ITEM_CACHE.isReady and #SERVER_ITEM_CACHE.enchants > 0 then
+            local enchants = SERVER_ITEM_CACHE.enchants
+            
+            -- Send in chunks
+            local chunkSize = 20
+            local totalChunks = math.ceil(#enchants / chunkSize)
+            if totalChunks == 0 then totalChunks = 1 end
+            
+            for chunk = 1, totalChunks do
+                local startIdx = (chunk - 1) * chunkSize + 1
+                local endIdx = math.min(chunk * chunkSize, #enchants)
+                local chunkEnchants = {}
+                
+                for i = startIdx, endIdx do
+                    table.insert(chunkEnchants, enchants[i])
+                end
+                
+                AIO.Msg():Add("TRANSMOG", "EnchantCollectionData", {
+                    chunk = chunk,
+                    totalChunks = totalChunks,
+                    enchants = chunkEnchants
+                }):Send(player)
+            end
+            return
+        end
+        
+        -- Fallback to direct query
         local enchants = GetAllEnchantVisuals()
         
         -- Send in chunks
@@ -2087,6 +2530,14 @@ if ENABLE_AIO_BRIDGE then
     -- ============================================================================
     
     -- TO DO
+    
+    -- ============================================================================
+    -- SERVER STARTUP - Build Cache
+    -- ============================================================================
+    -- Build the item cache on server startup (called once when script loads)
+    -- ============================================================================
+    
+    BuildServerItemCacheAsync()
        
     print("[mod-transmog-system] AIO Server Bridge loaded")
 end

@@ -150,7 +150,73 @@ local isCollectionLoaded = false
 local appearanceCache = {}
 local pendingTooltipChecks = {}
 
+-- ============================================================================
+-- CLIENT-SIDE ITEM CACHE SYSTEM
+-- ============================================================================
+-- Items are cached locally with a version number in SavedVariables.
+-- If server version matches client version, no retransmission needed.
+-- Client filters items locally instead of asking server every time.
+-- ============================================================================
+
+-- This will be populated from TransmogDB.itemCache on PLAYER_ENTERING_WORLD
+local CLIENT_ITEM_CACHE = {
+    version = 0,              -- Cache version from server (0 = no cache)
+    isReady = false,          -- Flag indicating cache is loaded
+    bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality}, ... }
+    enchants = {},            -- All enchant visuals with version
+    enchantVersion = 0,       -- Enchant cache version
+}
+
+-- Pending cache requests tracking
+local pendingEnchantCacheRequest = false
+
+-- Helper to load cache from SavedVariables
+local function LoadCacheFromSavedVariables()
+    if TransmogDB and TransmogDB.itemCache then
+        CLIENT_ITEM_CACHE.version = TransmogDB.itemCache.version or 0
+        CLIENT_ITEM_CACHE.bySlot = TransmogDB.itemCache.bySlot or {}
+        CLIENT_ITEM_CACHE.enchants = TransmogDB.itemCache.enchants or {}
+        CLIENT_ITEM_CACHE.enchantVersion = TransmogDB.itemCache.enchantVersion or 0
+        CLIENT_ITEM_CACHE.isReady = (CLIENT_ITEM_CACHE.version > 0)
+        
+        if CLIENT_ITEM_CACHE.isReady then
+            local slotCount = 0
+            local itemCount = 0
+            for slotId, items in pairs(CLIENT_ITEM_CACHE.bySlot) do
+                slotCount = slotCount + 1
+                itemCount = itemCount + #items
+            end
+            print(string.format("[Transmog] Loaded cache from SavedVariables: version=%d, %d slots, %d items, %d enchants",
+                CLIENT_ITEM_CACHE.version, slotCount, itemCount, #CLIENT_ITEM_CACHE.enchants))
+        end
+    end
+end
+
+-- Helper to save cache to SavedVariables
+local function SaveCacheToSavedVariables()
+    TransmogDB = TransmogDB or {}
+    TransmogDB.itemCache = {
+        version = CLIENT_ITEM_CACHE.version,
+        bySlot = CLIENT_ITEM_CACHE.bySlot,
+        enchants = CLIENT_ITEM_CACHE.enchants,
+        enchantVersion = CLIENT_ITEM_CACHE.enchantVersion,
+    }
+    
+    -- Debug: count what we saved
+    local slotCount = 0
+    local itemCount = 0
+    for slotId, items in pairs(CLIENT_ITEM_CACHE.bySlot) do
+        slotCount = slotCount + 1
+        itemCount = itemCount + #items
+    end
+    print(string.format("[Transmog] Saved cache to SavedVariables: version=%d, %d slots, %d items, %d enchants",
+        CLIENT_ITEM_CACHE.version, slotCount, itemCount, #CLIENT_ITEM_CACHE.enchants))
+end
+
+-- ============================================================================
 -- Current UI state (initialized properly in PLAYER_ENTERING_WORLD)
+-- ============================================================================
+
 local currentSlot = "Head"
 local currentSubclass = "All"  -- TO DO, Currently use "ALL" as default
 local currentQuality = "All"
@@ -260,6 +326,223 @@ local function RequestSlotItemsFromServer(slotId, subclass, quality, collectionF
 end
 
 -- ============================================================================
+-- CLIENT-SIDE CACHE FUNCTIONS
+-- ============================================================================
+-- These functions handle the new cache-based system for better performance.
+-- Instead of asking the server for filtered items every time, we:
+-- 1. Download the full item cache once (versioned)
+-- 2. Download player's collection status (small payload)
+-- 3. Filter items locally on the client
+-- ============================================================================
+
+-- Subclass name to ID mappings (must match server)
+local ARMOR_SUBCLASS = {
+    ["Miscellaneous"] = 0,
+    ["Cloth"]         = 1,
+    ["Leather"]       = 2,
+    ["Mail"]          = 3,
+    ["Plate"]         = 4,
+    ["Shield"]        = 6,
+}
+
+local WEAPON_SUBCLASS = {
+    ["Axe1H"]    = 0,
+    ["Axe2H"]    = 1,
+    ["Bow"]      = 2,
+    ["Gun"]      = 3,
+    ["Mace1H"]   = 4,
+    ["Mace2H"]   = 5,
+    ["Polearm"]  = 6,
+    ["Sword1H"]  = 7,
+    ["Sword2H"]  = 8,
+    ["Staff"]    = 10,
+    ["Fist"]     = 13,
+    ["Dagger"]   = 15,
+    ["Thrown"]   = 16,
+    ["Crossbow"] = 18,
+    ["Wand"]     = 19,
+    ["Fishing"]  = 20,
+}
+
+-- Quality name to ID mapping
+local QUALITY_NAME_TO_ID = {
+    ["Poor"]      = 0,
+    ["Common"]    = 1,
+    ["Uncommon"]  = 2,
+    ["Rare"]      = 3,
+    ["Epic"]      = 4,
+    ["Legendary"] = 5,
+    ["Heirloom"]  = 6,
+}
+
+-- Track if we're currently requesting full cache
+local pendingFullCacheRequest = false
+
+-- Request FULL cache from server (all slots at once)
+-- Called once on login - server sends all items, client stores in SavedVariables
+local function RequestFullCacheFromServer()
+    if pendingFullCacheRequest then
+        return  -- Already requesting
+    end
+    
+    pendingFullCacheRequest = true
+    local clientVersion = CLIENT_ITEM_CACHE.version or 0
+    print(string.format("[Transmog] Requesting full cache from server (client version: %d)", clientVersion))
+    AIO.Msg():Add("TRANSMOG", "RequestFullCache", clientVersion):Send()
+end
+
+-- Request enchant cache from server (only if version differs)
+local function RequestEnchantCacheFromServer()
+    if pendingEnchantCacheRequest then
+        return  -- Already requesting
+    end
+    
+    pendingEnchantCacheRequest = true
+    local clientVersion = CLIENT_ITEM_CACHE.enchantVersion or 0
+    AIO.Msg():Add("TRANSMOG", "RequestEnchantCache", clientVersion):Send()
+end
+
+-- Request collection status from server (player's owned items - small payload)
+local function RequestCollectionStatusFromServer()
+    AIO.Msg():Add("TRANSMOG", "RequestCollectionStatus"):Send()
+end
+
+-- Check if we have cache for a specific slot
+local function HasSlotCache(slotId)
+    return CLIENT_ITEM_CACHE.bySlot[slotId] and #CLIENT_ITEM_CACHE.bySlot[slotId] > 0
+end
+
+-- Check if full cache is ready (all slots loaded)
+local function IsFullCacheReady()
+    return CLIENT_ITEM_CACHE.isReady and CLIENT_ITEM_CACHE.version > 0
+end
+
+-- LOCAL FILTERING: Filter cached items by subclass, quality, and collection status
+-- This is the key performance improvement - filtering happens on client, not server
+local function FilterCachedItemsForSlot(slotId, subclassName, qualityName, collectionFilter)
+    local cachedItems = CLIENT_ITEM_CACHE.bySlot[slotId]
+    if not cachedItems then
+        return {}
+    end
+    
+    -- Determine subclass filter
+    local filterClass, filterSubclass
+    if subclassName and subclassName ~= "" and subclassName ~= "All" then
+        if ARMOR_SUBCLASS[subclassName] then
+            filterClass = 4  -- Armor class
+            filterSubclass = ARMOR_SUBCLASS[subclassName]
+        elseif WEAPON_SUBCLASS[subclassName] then
+            filterClass = 2  -- Weapon class
+            filterSubclass = WEAPON_SUBCLASS[subclassName]
+        end
+    end
+    
+    -- Determine quality filter
+    local filterQuality
+    if qualityName and qualityName ~= "" and qualityName ~= "All" then
+        filterQuality = QUALITY_NAME_TO_ID[qualityName]
+    end
+    
+    -- Determine collection filter
+    local showCollected = (collectionFilter == "All" or collectionFilter == "Collected")
+    local showUncollected = (collectionFilter == "All" or collectionFilter == "Uncollected")
+    
+    -- Filter items
+    local collectedItems = {}
+    local uncollectedItems = {}
+    
+    for _, itemData in ipairs(cachedItems) do
+        -- itemData format: {itemId, class, subclass, quality}
+        local itemId = itemData[1]
+        local itemClass = itemData[2]
+        local itemSubclass = itemData[3]
+        local itemQuality = itemData[4]
+        
+        -- Apply subclass filter
+        local passSubclass = true
+        if filterClass and filterSubclass then
+            passSubclass = (itemClass == filterClass and itemSubclass == filterSubclass)
+        end
+        
+        -- Apply quality filter
+        local passQuality = true
+        if filterQuality then
+            passQuality = (itemQuality == filterQuality)
+        end
+        
+        -- Check collection status
+        local isCollected = collectedAppearances[itemId] == true
+        
+        -- Apply all filters
+        if passSubclass and passQuality then
+            if isCollected and showCollected then
+                table.insert(collectedItems, { itemId = itemId, collected = true })
+            elseif not isCollected and showUncollected then
+                table.insert(uncollectedItems, { itemId = itemId, collected = false })
+            end
+        end
+    end
+    
+    -- Combine: collected first, then uncollected (matching server behavior)
+    local result = {}
+    for _, item in ipairs(collectedItems) do
+        table.insert(result, item)
+    end
+    for _, item in ipairs(uncollectedItems) do
+        table.insert(result, item)
+    end
+    
+    return result
+end
+
+-- Get items for slot using local cache with filtering
+-- Get filtered items from local cache
+-- Returns nil if cache is not ready
+local function GetFilteredItemsFromCache(slotId, subclassName, qualityName, collectionFilter)
+    if IsFullCacheReady() and HasSlotCache(slotId) then
+        -- Use local cache and filter - NO server request
+        return FilterCachedItemsForSlot(slotId, subclassName, qualityName, collectionFilter)
+    else
+        return nil  -- Cache not ready
+    end
+end
+
+-- Helper function to load items for a slot using local cache
+-- This is the main function to call when changing slots/filters
+-- ALL filtering is done locally - NO server requests for filtering
+local function LoadItemsForSlot(slotId, subclassName, qualityName, collectionFilter)
+    if IsFullCacheReady() then
+        -- Use local cache - instant filtering, NO server request
+        local cachedItems = FilterCachedItemsForSlot(slotId, subclassName, qualityName, collectionFilter)
+        currentItems = cachedItems or {}
+        currentPage = 1
+        UpdatePreviewGrid()
+        
+        -- Update page text
+        local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
+        if mainFrame and mainFrame.pageText then
+            mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages))
+        end
+    else
+        -- Cache not ready - request full cache if not already pending
+        currentItems = {}
+        currentPage = 1
+        UpdatePreviewGrid()
+        
+        if mainFrame and mainFrame.pageText then
+            mainFrame.pageText:SetText("Loading cache...")
+        end
+        
+        if not pendingFullCacheRequest then
+            RequestFullCacheFromServer()
+        end
+        
+        -- Also use legacy request as fallback for immediate results
+        RequestSlotItemsFromServer(slotId, subclassName, qualityName, collectionFilter)
+    end
+end
+
+-- ============================================================================
 -- Set Management Functions
 -- ============================================================================
 
@@ -296,6 +579,206 @@ end
 -- ============================================================================
 
 local TRANSMOG_HANDLER = AIO.AddHandlers("TRANSMOG", {})
+
+-- ============================================================================
+-- NEW: Full Cache AIO Handlers
+-- ============================================================================
+
+-- Buffer for accumulating full cache chunks
+local fullCacheBuffer = {}
+local fullCacheTotalChunks = 0
+local fullCacheReceivedChunks = 0
+local fullCacheVersion = 0
+
+-- Full cache data received (chunked) - ALL slots at once
+TRANSMOG_HANDLER.FullCacheData = function(player, data)
+    if not data then return end
+    
+    local chunk = data.chunk or 1
+    local totalChunks = data.totalChunks or 1
+    
+    -- Initialize on first chunk
+    if chunk == 1 then
+        fullCacheBuffer = {}
+        fullCacheTotalChunks = totalChunks
+        fullCacheReceivedChunks = 0
+        fullCacheVersion = data.version
+        print(string.format("[Transmog] Receiving full cache (version %d, %d chunks)", data.version, totalChunks))
+    end
+    
+    -- Accumulate items: each item is {slotId, itemId, class, subclass, quality}
+    if data.items then
+        for _, itemData in ipairs(data.items) do
+            local slotId = itemData[1]
+            if not fullCacheBuffer[slotId] then
+                fullCacheBuffer[slotId] = {}
+            end
+            -- Store as {itemId, class, subclass, quality}
+            table.insert(fullCacheBuffer[slotId], {
+                itemData[2],  -- itemId
+                itemData[3],  -- class
+                itemData[4],  -- subclass
+                itemData[5]   -- quality
+            })
+        end
+    end
+    
+    fullCacheReceivedChunks = fullCacheReceivedChunks + 1
+    
+    -- Show loading progress
+    if mainFrame and mainFrame.pageText then
+        mainFrame.pageText:SetText(string.format("Loading cache... %d/%d", 
+            fullCacheReceivedChunks, fullCacheTotalChunks))
+    end
+    
+    -- When all chunks received, store in cache
+    if fullCacheReceivedChunks >= fullCacheTotalChunks then
+        CLIENT_ITEM_CACHE.bySlot = fullCacheBuffer
+        CLIENT_ITEM_CACHE.version = fullCacheVersion
+        CLIENT_ITEM_CACHE.isReady = true
+        pendingFullCacheRequest = false
+        
+        -- Count items
+        local totalItems = 0
+        local slotCount = 0
+        for slotId, items in pairs(fullCacheBuffer) do
+            slotCount = slotCount + 1
+            totalItems = totalItems + #items
+        end
+        
+        print(string.format("[Transmog] Full cache complete: %d items across %d slots (version %d)", 
+            totalItems, slotCount, fullCacheVersion))
+        
+        -- Clear buffer
+        fullCacheBuffer = {}
+        fullCacheTotalChunks = 0
+        fullCacheReceivedChunks = 0
+        
+        -- Save to SavedVariables
+        SaveCacheToSavedVariables()
+        
+        -- Update the display using local filtering
+        local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
+        if currentSlotId then
+            currentItems = FilterCachedItemsForSlot(currentSlotId, currentSubclass, currentQuality, currentCollectionFilter)
+            currentPage = 1
+            UpdatePreviewGrid()
+            
+            local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
+            if mainFrame and mainFrame.pageText then
+                mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages))
+            end
+        end
+    end
+end
+
+-- Full cache is already up to date
+TRANSMOG_HANDLER.FullCacheUpToDate = function(player, data)
+    pendingFullCacheRequest = false
+    print(string.format("[Transmog] Cache is up to date (version %d)", data and data.version or CLIENT_ITEM_CACHE.version))
+    
+    -- Use existing cache for display
+    local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
+    if currentSlotId and IsFullCacheReady() then
+        currentItems = FilterCachedItemsForSlot(currentSlotId, currentSubclass, currentQuality, currentCollectionFilter)
+        currentPage = 1
+        UpdatePreviewGrid()
+    end
+end
+
+-- Full cache not ready on server
+TRANSMOG_HANDLER.FullCacheNotReady = function(player, data)
+    pendingFullCacheRequest = false
+    print("[Transmog] Server cache not ready, using legacy requests")
+    -- Fall back to legacy request for current slot
+    local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
+    if currentSlotId then
+        RequestSlotItemsFromServer(currentSlotId, currentSubclass, currentQuality, currentCollectionFilter)
+    end
+end
+
+-- Collection status received (player's owned items - compact)
+TRANSMOG_HANDLER.CollectionStatus = function(player, data)
+    if not data then return end
+    
+    -- Clear on first chunk
+    if data.chunk == 1 then
+        collectedAppearances = {}
+    end
+    
+    -- Add items to collection
+    for _, itemId in ipairs(data.items or {}) do
+        collectedAppearances[itemId] = true
+    end
+    
+    -- When all chunks received
+    if data.chunk == data.totalChunks then
+        isCollectionLoaded = true
+        print(string.format(L["COLLECTION_LOADED"], GetCollectionCount()))
+        
+        -- If we have cached items for current slot, re-filter with updated collection
+        local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
+        if HasSlotCache(currentSlotId) then
+            currentItems = FilterCachedItemsForSlot(currentSlotId, currentSubclass, currentQuality, currentCollectionFilter)
+            UpdatePreviewGrid()
+        end
+    end
+end
+
+-- Enchant cache data received
+TRANSMOG_HANDLER.EnchantCacheData = function(player, data)
+    if not data then return end
+    
+    local chunk = data.chunk or 1
+    local totalChunks = data.totalChunks or 1
+    
+    -- Initialize on first chunk
+    if chunk == 1 then
+        CLIENT_ITEM_CACHE.enchants = {}
+    end
+    
+    -- Accumulate enchants
+    for _, enchant in ipairs(data.enchants or {}) do
+        table.insert(CLIENT_ITEM_CACHE.enchants, enchant)
+    end
+    
+    -- When all chunks received
+    if chunk >= totalChunks then
+        CLIENT_ITEM_CACHE.enchantVersion = data.version
+        ENCHANT_VISUALS = CLIENT_ITEM_CACHE.enchants
+        pendingEnchantCacheRequest = false
+        
+        print(string.format("[Transmog] Cached %d enchant visuals", #ENCHANT_VISUALS))
+        
+        -- Save to SavedVariables
+        SaveCacheToSavedVariables()
+        
+        -- Update enchant grid if in enchant mode
+        if currentTransmogMode == TRANSMOG_MODE_ENCHANT then
+            UpdateEnchantGrid()
+        end
+    end
+end
+
+-- Enchant cache up to date
+TRANSMOG_HANDLER.EnchantCacheUpToDate = function(player, data)
+    pendingEnchantCacheRequest = false
+    -- Use existing cache
+    if #CLIENT_ITEM_CACHE.enchants > 0 then
+        ENCHANT_VISUALS = CLIENT_ITEM_CACHE.enchants
+    end
+end
+
+-- Enchant cache not ready
+TRANSMOG_HANDLER.EnchantCacheNotReady = function(player, data)
+    pendingEnchantCacheRequest = false
+    -- Fall back to legacy request
+    RequestEnchantCollectionFromServer()
+end
+
+-- ============================================================================
+-- Legacy Handlers (kept for backwards compatibility)
+-- ============================================================================
 
 -- Buffer for accumulating chunked search results
 local searchResultsBuffer = {}
@@ -1620,12 +2103,9 @@ local function UpdateSubclassDropdown()
                 slotSelectedSubclass[currentSlot] = currentSubclass  -- Store the selection
                 UIDropDownMenu_SetText(subclassDropdown, L[self.value] or self.value)
                 
-                -- Request items from server with subclass filter
+                -- NEW: Use cache-based loading with local filtering
                 local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-                currentItems = {}
-                currentPage = 1
-                UpdatePreviewGrid()  -- Clear grid immediately
-                RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)
+                LoadItemsForSlot(slotId, currentSubclass, currentQuality, currentCollectionFilter)
                 
                 CloseDropDownMenus()
             end
@@ -1665,12 +2145,9 @@ local function UpdateQualityDropdown()
                     UIDropDownMenu_SetText(qualityDropdown, color .. currentQuality .. "|r")
                 end
                 
-                -- Request items from server with quality filter
+                -- NEW: Use cache-based loading with local filtering
                 local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-                currentItems = {}
-                currentPage = 1
-                UpdatePreviewGrid()  -- Clear grid immediately
-                RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)
+                LoadItemsForSlot(slotId, currentSubclass, currentQuality, currentCollectionFilter)
                 
                 CloseDropDownMenus()
             end
@@ -1722,12 +2199,9 @@ UpdateCollectionFilterDropdown = function()
                     UIDropDownMenu_SetText(collectionFilterDropdown, L["FILTER_ALL"] or "All")
                 end
                 
-                -- Request items from server with collection filter
+                -- NEW: Use cache-based loading with local filtering
                 local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-                currentItems = {}
-                currentPage = 1
-                UpdatePreviewGrid()  -- Clear grid immediately
-                RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)
+                LoadItemsForSlot(slotId, currentSubclass, currentQuality, currentCollectionFilter)
                 
                 CloseDropDownMenus()
             end
@@ -1909,9 +2383,9 @@ local function CreateSlotButton(parent, slotName)
         UpdateCollectionFilterDropdown()  -- NEW
         UpdatePreviewGrid()
         
-        -- Request items from server with current filters
+        -- NEW: Use cache-based loading with local filtering
         local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-        RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)  -- NEW: Include collection filter
+        LoadItemsForSlot(slotId, currentSubclass, currentQuality, currentCollectionFilter)
         
         PlaySound("igMainMenuOptionCheckBoxOn")
     end)
@@ -2390,12 +2864,9 @@ local function CreateSearchBar(parent, previewGrid)
             UpdateSlotButtonIcons()
         end)
         
-        -- Reset to show all items for current slot
+        -- Reset to show all items for current slot using cache
         local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-        currentItems = {}
-        currentPage = 1
-        UpdatePreviewGrid()
-        RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)
+        LoadItemsForSlot(slotId, currentSubclass, currentQuality, currentCollectionFilter)
     end
     
     -- Set up event handlers
@@ -2798,8 +3269,18 @@ end
 
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+initFrame:RegisterEvent("PLAYER_LOGOUT")
 initFrame:SetScript("OnEvent", function(self, event)
+    if event == "PLAYER_LOGOUT" then
+        -- Save cache to SavedVariables on logout
+        SaveCacheToSavedVariables()
+        return
+    end
+    
     if event == "PLAYER_ENTERING_WORLD" then
+        -- Load cache from SavedVariables first
+        LoadCacheFromSavedVariables()
+        
         -- Initialize slot selected items table
         slotSelectedItems = {}
         
@@ -2810,10 +3291,23 @@ initFrame:SetScript("OnEvent", function(self, event)
         end
         
         -- Request fresh data from server after delay
+        -- NEW: Use cache-based system for better performance
         C_Timer.After(2, function()
+            -- Request player's collection status (small payload)
+            RequestCollectionStatusFromServer()
+            -- Also support legacy for backwards compatibility
             RequestCollectionFromServer()
+            
             RequestActiveTransmogsFromServer()
             RequestSetsFromServer()
+            
+            -- Request FULL item cache (all slots at once)
+            -- This is the key performance improvement - only done once
+            RequestFullCacheFromServer()
+            
+            -- Request enchant cache (versioned)
+            RequestEnchantCacheFromServer()
+            -- Fallback to legacy if cache not supported
             RequestEnchantCollectionFromServer()
             RequestActiveEnchantTransmogsFromServer()
         end)
@@ -2844,10 +3338,21 @@ initFrame:SetScript("OnEvent", function(self, event)
                     currentItems = searchSlotResults[currentSlotId]
                 end
             else
-                -- Normal mode: request fresh data when window opens
+                -- Use local cache for filtering (no server request)
                 local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-                currentItems = {}
-                RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)  -- NEW: Include collection filter
+                
+                if IsFullCacheReady() then
+                    -- Use locally filtered cache - NO server request
+                    currentItems = FilterCachedItemsForSlot(slotId, currentSubclass, currentQuality, currentCollectionFilter)
+                else
+                    -- Cache not ready yet, request it (will update display when received)
+                    currentItems = {}
+                    if not pendingFullCacheRequest then
+                        RequestFullCacheFromServer()
+                    end
+                    -- Also use legacy as fallback for immediate results
+                    RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)
+                end
             end
             
             -- Ensure preview grid is updated
