@@ -325,7 +325,17 @@ end
 -- ============================================================================
 
 local function IsAppearanceCollected(itemId)
-    return collectedAppearances[itemId] == true
+    -- Check runtime cache first
+    if collectedAppearances[itemId] == true then
+        return true
+    end
+    -- Fallback to SavedVariables
+    if TransmogDB and TransmogDB.collection and TransmogDB.collection[itemId] == true then
+        -- Sync to runtime cache
+        collectedAppearances[itemId] = true
+        return true
+    end
+    return false
 end
 
 local function MarkAppearanceCollected(itemId)
@@ -500,8 +510,15 @@ local function FilterCachedItemsForSlot(slotId, subclassName, qualityName, colle
             passQuality = (itemQuality == filterQuality)
         end
         
-        -- Check collection status
+        -- Check collection status (use runtime cache, fallback to SavedVariables)
         local isCollected = collectedAppearances[itemId] == true
+        if not isCollected and TransmogDB and TransmogDB.collection then
+            isCollected = TransmogDB.collection[itemId] == true
+            -- Sync to runtime cache if found in SavedVariables
+            if isCollected then
+                collectedAppearances[itemId] = true
+            end
+        end
         
         -- Apply all filters
         if passSubclass and passQuality then
@@ -1335,6 +1352,14 @@ local function OnTooltipSetItem(tooltip)
         return
     end
     
+    -- Check local collection (from SavedVariables/runtime cache)
+    if IsAppearanceCollected(itemId) then
+        tooltip:AddLine(L["APPEARANCE_COLLECTED"])
+        tooltip:Show()
+		else
+		tooltip:AddLine(L["NEW_APPEARANCE"])
+    end
+    
     -- Not in cache - ask server (only once per item per session)
     if not pendingTooltipChecks[itemId] then
         pendingTooltipChecks[itemId] = true
@@ -1611,11 +1636,8 @@ local function CreateItemFrame(parent, index)
         if f.itemId and f.isLoaded then
             if button == "LeftButton" then
                 if IsShiftKeyDown() then
-                    if IsAppearanceCollected(f.itemId) then
-                        ApplyTransmog(currentSlot, f.itemId)
-                    else
-                        print(L["APPEARANCE_NOT_COLLECTED"])
-                    end
+                    -- Let server validate collection status (respects ALLOW_UNCOLLECTED_TRANSMOG setting)
+                    ApplyTransmog(currentSlot, f.itemId)
                 else
                     -- Clear previous selection for this slot from ALL item frames
                     for _, itemFrame in ipairs(itemFrames) do
@@ -1683,7 +1705,12 @@ local function CreateItemFrame(parent, index)
             GameTooltip:SetOwner(f, "ANCHOR_TOPRIGHT")
             GameTooltip:SetHyperlink("item:"..f.itemId)
             GameTooltip:AddLine(" ")
-            if IsAppearanceCollected(f.itemId) then
+            -- Use stored collection status from frame, fallback to global check
+            local isCollected = f.isCollected
+            if isCollected == nil then
+                isCollected = IsAppearanceCollected(f.itemId)
+            end
+            if isCollected then
                 GameTooltip:AddLine(L["APPEARANCE_COLLECTED"])
                 GameTooltip:AddLine(L["APPLY_APPEARANCE_SHIFT_CLICK"], 0.7, 0.7, 0.7)
             else
@@ -1797,7 +1824,11 @@ local function SetupItemModel(frame, slotName)
         frame:SetBackdropColor(0.15, 0.15, 0.15, 1)
     end
     
-    if IsAppearanceCollected(frame.itemId) then
+    local isCollected = frame.isCollected
+    if isCollected == nil then
+        isCollected = IsAppearanceCollected(frame.itemId)
+    end
+    if isCollected then
         frame.collectedIcon:Show()
         frame.newIcon:Hide()
         model:SetAlpha(1.0)
@@ -2332,20 +2363,25 @@ local function CreateSlotButton(parent, slotName)
     btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
     btn:SetCheckedTexture("Interface\\Buttons\\CheckButtonHilight")
     
-    -- Create overlay icon for active transmog (ARTWORK layer so border can be on top)
-    local transmogIcon = btn:CreateTexture(nil, "ARTWORK")
+    -- Create a separate frame for overlays to ensure they're on top
+    local overlayFrame = CreateFrame("Frame", nil, btn)
+    overlayFrame:SetAllPoints(btn)
+    overlayFrame:SetFrameLevel(btn:GetFrameLevel() + 10)
+    
+    -- Create overlay icon for active transmog
+    local transmogIcon = overlayFrame:CreateTexture(nil, "ARTWORK")
     transmogIcon:SetSize(28, 28)
     transmogIcon:SetPoint("CENTER")
     transmogIcon:Hide()
     btn.transmogIcon = transmogIcon
     
-    -- Create active indicator border (OVERLAY layer - on top of transmogIcon)
-    local activeBorder = btn:CreateTexture(nil, "OVERLAY")
+    -- Create active indicator border
+    local activeBorder = overlayFrame:CreateTexture(nil, "OVERLAY")
     activeBorder:SetSize(48, 48)
     activeBorder:SetPoint("CENTER")
     activeBorder:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
     activeBorder:SetBlendMode("ADD")
-    activeBorder:SetVertexColor(0, 1, 0, 0.7)
+    activeBorder:SetVertexColor(0, 1, 0, 1)
     activeBorder:Hide()
     btn.activeBorder = activeBorder
     
@@ -2366,107 +2402,189 @@ local function CreateSlotButton(parent, slotName)
         local slotId = SLOT_NAME_TO_EQUIP_SLOT[self.slotName]
         local activeItemId = activeTransmogs[slotId]
         local activeEnchant = activeEnchantTransmogs[slotId]
-        local isEnchantEligible = ENCHANT_ELIGIBLE_SLOTS[self.slotName]
+        local isWeapon = ENCHANT_ELIGIBLE_SLOTS[self.slotName]
         
-        -- Determine what to show based on current mode
-        if currentTransmogMode == TRANSMOG_MODE_ENCHANT and isEnchantEligible then
-            -- ENCHANT MODE: Show enchant texture, border indicates if item transmog exists
-            if activeEnchant then
-                local enchantIcon = GetEnchantIcon(activeEnchant)
-                if enchantIcon then
-                    self.transmogIcon:SetTexture(enchantIcon)
-                    self.transmogIcon:Show()
-                else
-                    self.transmogIcon:Hide()
-                end
-                
-                -- Border color: green if item also exists, pink if only enchant
-                if self.activeBorder then
-                    self.activeBorder:Show()
-                    if activeItemId then
-                        self.activeBorder:SetVertexColor(0, 1, 0, 0.7)  -- Green = item also active
+        -- -- Debug output
+        -- if isWeapon then
+        --     print(string.format("[Transmog Debug] UpdateTransmogIcon: slot=%s, slotId=%s, mode=%s, hasItem=%s, hasEnchant=%s",
+        --         self.slotName, tostring(slotId), 
+        --         currentTransmogMode == TRANSMOG_MODE_ITEM and "ITEM" or "ENCHANT",
+        --         tostring(activeItemId), tostring(activeEnchant)))
+        -- end
+        
+        -- Search override
+        local hasSearchMatches = searchActive and searchSlotResults[slotId] and #searchSlotResults[slotId] > 0
+        
+        -- Reset state
+        self.transmogIcon:Hide()
+        if self.activeBorder then
+            self.activeBorder:Hide()
+        end
+        
+        if currentTransmogMode == TRANSMOG_MODE_ITEM then
+            -- =====================
+            -- ITEM MODE
+            -- =====================
+            if isWeapon then
+                -- WEAPON SLOT
+                if activeItemId then
+                    -- Show item icon
+                    local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(activeItemId)
+                    -- print("[Transmog Debug] ITEM MODE weapon slot, itemId=" .. activeItemId .. ", texture=" .. tostring(itemTexture))
+                    if itemTexture then
+                        self.transmogIcon:SetTexture(itemTexture)
+                        self.transmogIcon:Show()
                     else
-                        self.activeBorder:SetVertexColor(1, 0.4, 0.7, 0.7)  -- Pink = only enchant
+                        GameTooltip:SetHyperlink("item:"..activeItemId)
+                        GameTooltip:Hide()
+                        C_Timer.After(0.2, function()
+                            if currentTransmogMode == TRANSMOG_MODE_ITEM and activeTransmogs[slotId] then
+                                local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(activeItemId)
+                                if tex then
+                                    self.transmogIcon:SetTexture(tex)
+                                    self.transmogIcon:Show()
+                                end
+                            end
+                        end)
+                    end
+                    -- Border: pink if enchant, green if no enchant
+                    if self.activeBorder then
+                        self.activeBorder:Show()
+                        if hasSearchMatches then
+                            self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                        elseif activeEnchant then
+                            self.activeBorder:SetVertexColor(1, 0.4, 0.7, 1)  -- Pink
+                        else
+                            self.activeBorder:SetVertexColor(0, 1, 0, 1)  -- Green
+                        end
+                    end
+                else
+                    -- No item: check for enchant or search matches
+                    if self.activeBorder then
+                        self.activeBorder:Show()
+                        if hasSearchMatches then
+                            self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                        elseif activeEnchant then
+                            self.activeBorder:SetVertexColor(1, 0.4, 0.7, 1)  -- Pink (enchant without item in ITEM MODE)
+                        else
+                            self.activeBorder:Hide()  -- No item, no enchant, no search - hide border
+                        end
                     end
                 end
-            elseif activeItemId then
-                -- No enchant but has item - show item icon with green border
-                local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(activeItemId)
-                if itemTexture then
-                    self.transmogIcon:SetTexture(itemTexture)
-                    self.transmogIcon:Show()
-                else
-                    self.transmogIcon:Hide()
-                end
-                if self.activeBorder then
-                    self.activeBorder:Show()
-                    self.activeBorder:SetVertexColor(0, 1, 0, 0.7)  -- Green for item
-                end
             else
-                self.transmogIcon:Hide()
-                if self.activeBorder then
-                    self.activeBorder:Hide()
+                -- ARMOR SLOT
+                if activeItemId then
+                    -- Show item icon + green border
+                    local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(activeItemId)
+                    if itemTexture then
+                        self.transmogIcon:SetTexture(itemTexture)
+                        self.transmogIcon:Show()
+                    else
+                        GameTooltip:SetHyperlink("item:"..activeItemId)
+                        GameTooltip:Hide()
+                        C_Timer.After(0.2, function()
+                            if currentTransmogMode == TRANSMOG_MODE_ITEM and activeTransmogs[slotId] then
+                                local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(activeItemId)
+                                if tex then
+                                    self.transmogIcon:SetTexture(tex)
+                                    self.transmogIcon:Show()
+                                end
+                            end
+                        end)
+                    end
+                    if self.activeBorder then
+                        self.activeBorder:Show()
+                        if hasSearchMatches then
+                            self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                        else
+                            self.activeBorder:SetVertexColor(0, 1, 0, 1)  -- Green
+                        end
+                    end
+                else
+                    -- No item: nothing
+                    if hasSearchMatches and self.activeBorder then
+                        self.activeBorder:Show()
+                        self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                    end
                 end
             end
         else
-            -- ITEM MODE (or non-enchant-eligible slot): Show item texture
-            if activeItemId then
-                local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(activeItemId)
-                if itemTexture then
-                    self.transmogIcon:SetTexture(itemTexture)
-                    self.transmogIcon:Show()
-                else
-                    -- Item info not cached yet, try to get it
-                    local tooltip = CreateFrame("GameTooltip", "TransmogIconTooltip"..activeItemId, nil, "GameTooltipTemplate")
-                    tooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
-                    tooltip:SetHyperlink("item:"..activeItemId)
-                    
-                    C_Timer.After(0.1, function()
-                        local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(activeItemId)
-                        if tex then
-                            self.transmogIcon:SetTexture(tex)
-                            self.transmogIcon:Show()
+            -- =====================
+            -- ENCHANT MODE
+            -- =====================
+            if isWeapon then
+                -- WEAPON SLOT
+                if activeItemId and activeEnchant then
+                    -- Has both: enchant icon + green border
+                    local enchantIcon = GetEnchantIcon(activeEnchant)
+                    if enchantIcon then
+                        self.transmogIcon:SetTexture(enchantIcon)
+                        self.transmogIcon:Show()
+                    end
+                    if self.activeBorder then
+                        self.activeBorder:Show()
+                        if hasSearchMatches then
+                            self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
                         else
-                            self.transmogIcon:Hide()
+                            self.activeBorder:SetVertexColor(0, 1, 0, 1)  -- Green
                         end
-                    end)
-                end
-                
-                -- Border color: pink if enchant also exists, green if only item
-                if self.activeBorder then
-                    self.activeBorder:Show()
-                    if activeEnchant and isEnchantEligible then
-                        self.activeBorder:SetVertexColor(1, 0.4, 0.7, 0.7)  -- Pink = enchant also active
-                    else
-                        self.activeBorder:SetVertexColor(0, 1, 0, 0.7)  -- Green = only item
+                    end
+                elseif activeItemId and not activeEnchant then
+                    -- Has item, no enchant: no icon + green border
+                    if self.activeBorder then
+                        self.activeBorder:Show()
+                        if hasSearchMatches then
+                            self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                        else
+                            self.activeBorder:SetVertexColor(0, 1, 0, 1)  -- Green
+                        end
+                    end
+                elseif not activeItemId and activeEnchant then
+                    -- No item, has enchant: enchant icon + pink border
+                    -- print("[Transmog Debug] Weapon no item + enchant: showing pink border for " .. self.slotName)
+                    local enchantIcon = GetEnchantIcon(activeEnchant)
+                    if enchantIcon then
+                        self.transmogIcon:SetTexture(enchantIcon)
+                        self.transmogIcon:Show()
+                    --     print("[Transmog Debug] Enchant icon set: " .. enchantIcon)
+                    -- else
+                    --     print("[Transmog Debug] No enchant icon found for enchant: " .. tostring(activeEnchant))
+                    end
+                    if self.activeBorder then
+                        self.activeBorder:Show()
+                        if hasSearchMatches then
+                            self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                        else
+                            self.activeBorder:SetVertexColor(1, 0.4, 0.7, 1)  -- Pink, full alpha
+                        end
+                    end
+                else
+                    -- No item, no enchant: nothing
+                    if hasSearchMatches and self.activeBorder then
+                        self.activeBorder:Show()
+                        self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
                     end
                 end
-            elseif activeEnchant and isEnchantEligible then
-                -- No item but has enchant - show enchant icon with pink border
-                local enchantIcon = GetEnchantIcon(activeEnchant)
-                if enchantIcon then
-                    self.transmogIcon:SetTexture(enchantIcon)
-                    self.transmogIcon:Show()
-                else
-                    self.transmogIcon:Hide()
-                end
-                if self.activeBorder then
-                    self.activeBorder:Show()
-                    self.activeBorder:SetVertexColor(1, 0.4, 0.7, 0.7)  -- Pink for enchant
-                end
             else
-                self.transmogIcon:Hide()
-                if self.activeBorder then
-                    self.activeBorder:Hide()
+                -- ARMOR SLOT
+                if activeItemId then
+                    -- Has item: NO icon + green border
+                    if self.activeBorder then
+                        self.activeBorder:Show()
+                        if hasSearchMatches then
+                            self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                        else
+                            self.activeBorder:SetVertexColor(0, 1, 0, 1)  -- Green
+                        end
+                    end
+                else
+                    -- No item: nothing
+                    if hasSearchMatches and self.activeBorder then
+                        self.activeBorder:Show()
+                        self.activeBorder:SetVertexColor(1, 0.5, 0, 1)
+                    end
                 end
             end
-        end
-        
-        -- Override with search matches (orange) if search is active
-        local hasSearchMatches = searchActive and searchSlotResults[slotId] and #searchSlotResults[slotId] > 0
-        if hasSearchMatches and self.activeBorder then
-            self.activeBorder:Show()
-            self.activeBorder:SetVertexColor(1, 0.5, 0, 0.7)  -- Orange for search matches
         end
     end
     
@@ -3025,14 +3143,128 @@ local function CreateSearchBar(parent, previewGrid)
     searchEditBox:SetAutoFocus(false)
     searchEditBox:SetMaxLetters(100)
     
+    -- Local search function using cached data
+    local function PerformLocalSearch(searchText, searchType)
+        if not CLIENT_ITEM_CACHE.isReady then
+            print("[Transmog] Cache not ready for local search")
+            return false
+        end
+        
+        local allResults = {}
+        local slotResults = {}
+        local searchLower = searchText:lower()
+        local searchNumber = tonumber(searchText)
+        
+        -- Search through all slots in cache
+        for slotId, items in pairs(CLIENT_ITEM_CACHE.bySlot) do
+            slotResults[slotId] = slotResults[slotId] or {}
+            
+            for _, itemData in ipairs(items) do
+                local itemId = itemData[1]
+                local match = false
+                
+                if searchType == "id" then
+                    -- Match by item ID
+                    if searchNumber and itemId == searchNumber then
+                        match = true
+                    elseif tostring(itemId):find(searchText, 1, true) then
+                        match = true
+                    end
+                elseif searchType == "name" then
+                    -- Match by item name (requires GetItemInfo)
+                    local itemName = GetItemInfo(itemId)
+                    if itemName and itemName:lower():find(searchLower, 1, true) then
+                        match = true
+                    end
+                elseif searchType == "displayid" then
+                    -- DisplayID search requires server - we don't cache displayIds
+                    -- Return false to trigger server search
+                    print("[Transmog] DisplayID search requires server connection")
+                    return false
+                end
+                
+                if match then
+                    local isCollected = collectedAppearances[itemId] == true
+                    local resultItem = { itemId = itemId, collected = isCollected }
+                    table.insert(allResults, resultItem)
+                    table.insert(slotResults[slotId], resultItem)
+                end
+            end
+        end
+        
+        -- Set search results
+        searchActive = true
+        searchResults = allResults
+        searchSlotResults = slotResults
+        
+        print(string.format("[Transmog] Local search found %d total items", #searchResults))
+        
+        -- Count matches per slot for debugging
+        if slotButtons then
+            for slotName, btn in pairs(slotButtons) do
+                local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+                local hasMatches = searchSlotResults[slotId] and #searchSlotResults[slotId] > 0
+                if hasMatches then
+                    print(string.format("[Transmog] Slot %s (id: %d) has %d matches", 
+                        slotName, slotId, #searchSlotResults[slotId]))
+                end
+            end
+        end
+        
+        -- Update slot button icons to show search highlights
+        C_Timer.After(0, function()
+            UpdateSlotButtonIcons()
+        end)
+        
+        -- If current slot has matches, show them
+        local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
+        if searchSlotResults[currentSlotId] then
+            currentItems = searchSlotResults[currentSlotId]
+            print(string.format("[Transmog] Showing %d matches for current slot %s", #currentItems, currentSlot))
+        else
+            currentItems = {}
+            print(string.format("[Transmog] No matches for current slot %s", currentSlot))
+        end
+        
+        currentPage = 1
+        UpdatePreviewGrid()
+        
+        -- Update page text
+        local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
+        if mainFrame and mainFrame.pageText then
+            if #searchResults > 0 then
+                mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages) .. " | " .. 
+                    string.format("Search: %d items (%d in %s)", #searchResults, #currentItems, currentSlot))
+            else
+                mainFrame.pageText:SetText("No results found")
+            end
+        end
+        
+        return true
+    end
+    
     -- Create the PerformSearch function BEFORE using it
     local function PerformSearch()
         local searchText = searchEditBox:GetText():trim()
         if searchText and searchText ~= "" then
             lastSearchText = searchText
-            local locale = GetLocale()
-            -- Search with slot -1 to get all items
-            AIO.Msg():Add("TRANSMOG", "SearchItems", -1, selectedSearchType, searchText, locale):Send()
+            
+            -- Try local search first (works even with AIO disabled)
+            if CLIENT_ITEM_CACHE.isReady then
+                local success = PerformLocalSearch(searchText, selectedSearchType)
+                if success then
+                    return  -- Local search worked
+                end
+            end
+            
+            -- Fall back to server search (displayid requires server, or cache not ready)
+            if AIO then
+                local locale = GetLocale()
+                -- Search with slot -1 to get all items
+                AIO.Msg():Add("TRANSMOG", "SearchItems", -1, selectedSearchType, searchText, locale):Send()
+            else
+                print("[Transmog] Search not available - cache not ready and AIO not loaded")
+            end
         else
             ClearSearch()
         end
@@ -3318,12 +3550,9 @@ local function CreateMainFrame()
             -- Apply selected item
             local selectedItem = slotSelectedItems[currentSlot]
             if selectedItem then
-                if IsAppearanceCollected(selectedItem) then
-                    ApplyTransmog(currentSlot, selectedItem)
-                    PlaySound("igCharacterInfoTab")
-                else
-                    print(L["APPEARANCE_NOT_COLLECTED"])
-                end
+                -- Let server validate collection status (respects ALLOW_UNCOLLECTED_TRANSMOG setting)
+                ApplyTransmog(currentSlot, selectedItem)
+                PlaySound("igCharacterInfoTab")
             else
                 print(L["SELECT_APPEARANCE_FIRST"] or "Select an appearance to apply")
             end

@@ -87,6 +87,13 @@ local ENABLE_APPLY_ALL_TRANSMOGS = true
 -- they are still able to save them in server DB no matter the setting
 local ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL = true
 
+-- ALLOW_UNCOLLECTED_TRANSMOG
+-- Set to true to allow players to apply transmog from items they haven't collected
+-- When true, players can use any valid transmog appearance (useful for testing or custom servers)
+-- When false (default), players must have the item in their collection to use it
+local ALLOW_UNCOLLECTED_TRANSMOG = false
+
+
 -- ───────────────────────────────── ITEM QUALITY ─────────────────────────────────
 
 -- Allowed item qualities for transmog (by quality ID)
@@ -117,10 +124,25 @@ local ITEM_BLACKLIST = {
 local function IsItemBlacklisted(itemId)
     return ITEM_BLACKLIST[itemId] == true
 end
+
+
+-- ───────────────────────────────── DEBUG TOGGLE ─────────────────────────────────
+
+-- ENABLE_DEBUG_MESSAGES
+-- Set to false to disable debug messages in the server console
+local ENABLE_DEBUG_MESSAGES = false
+
 	
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║                                    SCRIPT                                    ║
 -- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- Helper function for debug printing
+local function DebugPrint(message)
+    if ENABLE_DEBUG_MESSAGES then
+        print(message)
+    end
+end
 
 
 
@@ -267,7 +289,7 @@ if ENABLE_AIO_BRIDGE then
     local BuildServerEnchantCacheAsync
     
     local function BuildServerItemCacheAsync()
-        print("[mod-transmog-system] Building server item cache (async)...")
+        DebugPrint("[mod-transmog-system] Building server item cache (async)...")
         
         -- Generate cache version based on server start time
         SERVER_ITEM_CACHE.version = os.time()
@@ -320,7 +342,7 @@ if ENABLE_AIO_BRIDGE then
                     end
                 until not Q:NextRow()
                 
-                print(string.format("[mod-transmog-system] Cached %d items across all slots", count))
+                DebugPrint(string.format("[mod-transmog-system] Cached %d items across all slots", count))
                 
                 -- Now load enchants (also async)
                 BuildServerEnchantCacheAsync()
@@ -333,7 +355,7 @@ if ENABLE_AIO_BRIDGE then
     
     -- Define BuildServerEnchantCacheAsync (declared above)
     BuildServerEnchantCacheAsync = function()
-        print("[mod-transmog-system] Building enchant cache (async)...")
+        DebugPrint("[mod-transmog-system] Building enchant cache (async)...")
         
         CharDBQueryAsync(
             "SELECT id, item_visual, name_enUS, icon FROM mod_transmog_system_enchantment ORDER BY id",
@@ -349,12 +371,12 @@ if ENABLE_AIO_BRIDGE then
                         })
                     until not Q:NextRow()
                     
-                    print(string.format("[mod-transmog-system] Cached %d enchant visuals", #SERVER_ITEM_CACHE.enchants))
+                    DebugPrint(string.format("[mod-transmog-system] Cached %d enchant visuals", #SERVER_ITEM_CACHE.enchants))
                 end
                 
                 -- Mark cache as ready
                 SERVER_ITEM_CACHE.isReady = true
-                print(string.format("[mod-transmog-system] Server cache ready! Version: %d", SERVER_ITEM_CACHE.version))
+                DebugPrint(string.format("[mod-transmog-system] Server cache ready! Version: %d", SERVER_ITEM_CACHE.version))
             end
         )
     end
@@ -880,32 +902,32 @@ if ENABLE_AIO_BRIDGE then
 	
     local function ApplyTransmogVisual(player, slot, fakeItemId)
         if not player or not TRANSMOG_SLOTS[slot] then
-            print("[Transmog Debug] ApplyTransmogVisual failed: invalid player or slot " .. tostring(slot))
+            DebugPrint("[Transmog Debug] ApplyTransmogVisual failed: invalid player or slot " .. tostring(slot))
             return false
         end
         
         -- Check if player has an item equipped in this slot
         local item = player:GetItemByPos(255, slot)
         if not item then
-            print("[Transmog Debug] ApplyTransmogVisual failed: no item in slot " .. tostring(slot))
+            DebugPrint("[Transmog Debug] ApplyTransmogVisual failed: no item in slot " .. tostring(slot))
             return false  -- Can only transmog if item is equipped
         end
         
         -- Get item template to verify it exists
         local itemTemplate = GetItemTemplate(fakeItemId)
         if not itemTemplate then
-            print("[Transmog Debug] ApplyTransmogVisual failed: item template not found for " .. tostring(fakeItemId))
+            DebugPrint("[Transmog Debug] ApplyTransmogVisual failed: item template not found for " .. tostring(fakeItemId))
             return false
         end
         
         -- Get the correct visual field for this slot
         local field = GetVisualField(slot)
         if not field then
-            print("[Transmog Debug] ApplyTransmogVisual failed: no visual field for slot " .. tostring(slot))
+            DebugPrint("[Transmog Debug] ApplyTransmogVisual failed: no visual field for slot " .. tostring(slot))
             return false
         end
         
-        print(string.format("[Transmog Debug] Applying visual: slot=%d, field=%d, fakeItemId=%d, displayId=%d", 
+        DebugPrint(string.format("[Transmog Debug] Applying visual: slot=%d, field=%d, fakeItemId=%d, displayId=%d", 
             slot, field, fakeItemId, itemTemplate.displayid or 0))
         
         -- Apply the visual using SetUInt32Value with the CORRECT field
@@ -944,25 +966,25 @@ if ENABLE_AIO_BRIDGE then
     
     local function ApplyEnchantVisual(player, slot, visualId)
         if not player or not IsEnchantEligibleSlot(slot) then
-            print("[Transmog Debug] ApplyEnchantVisual failed: invalid player or slot " .. tostring(slot))
+            DebugPrint("[Transmog Debug] ApplyEnchantVisual failed: invalid player or slot " .. tostring(slot))
             return false
         end
         
         -- Check if player has an item equipped in this slot
         local item = player:GetItemByPos(255, slot)
         if not item then
-            print("[Transmog Debug] ApplyEnchantVisual failed: no item in slot " .. tostring(slot))
+            DebugPrint("[Transmog Debug] ApplyEnchantVisual failed: no item in slot " .. tostring(slot))
             return false
         end
         
         -- Get the correct enchantment visual field for this slot
         local field = GetEnchantmentVisualField(slot)
         if not field then
-            print("[Transmog Debug] ApplyEnchantVisual failed: no enchant field for slot " .. tostring(slot))
+            DebugPrint("[Transmog Debug] ApplyEnchantVisual failed: no enchant field for slot " .. tostring(slot))
             return false
         end
         
-        print(string.format("[Transmog Debug] Applying enchant visual: slot=%d, field=%d, visualId=%d", 
+        DebugPrint(string.format("[Transmog Debug] Applying enchant visual: slot=%d, field=%d, visualId=%d", 
             slot, field, visualId))
         
         -- Apply the enchant visual using SetUInt32Value
@@ -1107,7 +1129,7 @@ if ENABLE_AIO_BRIDGE then
         end
         
         if appliedCount > 0 then
-            print(string.format("[Transmog] Applied %d enchant transmogs for %s", appliedCount, player:GetName()))
+            DebugPrint(string.format("[Transmog] Applied %d enchant transmogs for %s", appliedCount, player:GetName()))
         end
     end
     
@@ -1132,7 +1154,7 @@ if ENABLE_AIO_BRIDGE then
         
         -- Single update after applying all transmogs
         if appliedCount > 0 then
-            print(string.format("[Transmog] Applied %d transmogs for %s", appliedCount, player:GetName()))
+            DebugPrint(string.format("[Transmog] Applied %d transmogs for %s", appliedCount, player:GetName()))
         end
     end
     
@@ -1276,7 +1298,7 @@ if ENABLE_AIO_BRIDGE then
             return
         end
         
-        print(string.format("[Transmog] Sending full cache to %s (client version: %s, server version: %d)", 
+        DebugPrint(string.format("[Transmog] Sending full cache to %s (client version: %s, server version: %d)", 
             player:GetName(), tostring(clientVersion), SERVER_ITEM_CACHE.version))
         
         -- Count total items across all slots for chunking
@@ -1316,7 +1338,7 @@ if ENABLE_AIO_BRIDGE then
             }):Send(player)
         end
         
-        print(string.format("[Transmog] Sent %d items in %d chunks to %s", 
+        DebugPrint(string.format("[Transmog] Sent %d items in %d chunks to %s", 
             #allItems, totalChunks, player:GetName()))
     end
     
@@ -1482,7 +1504,7 @@ if ENABLE_AIO_BRIDGE then
     -- Search items - searches ALL items and includes collected status
     TRANSMOG_HANDLER.SearchItems = function(player, slotId, searchType, searchText, locale)
         if not searchType or not searchText then
-            print("[Transmog Debug] SearchItems received invalid parameters")
+            DebugPrint("[Transmog Debug] SearchItems received invalid parameters")
             return
         end
         
@@ -1680,7 +1702,7 @@ if ENABLE_AIO_BRIDGE then
     -- New clients should use RequestSlotCache + RequestCollectionStatus for better performance
     TRANSMOG_HANDLER.RequestSlotItems = function(player, slotId, subclass, quality, collectionFilter)
         if slotId == nil then
-            print("[Transmog Server] RequestSlotItems received nil slotId")
+            DebugPrint("[Transmog Server] RequestSlotItems received nil slotId")
             return
         end
         
@@ -1748,8 +1770,13 @@ if ENABLE_AIO_BRIDGE then
         local accountId = player:GetAccountId()
         local guid = player:GetGUIDLow()
         
-        -- Verify player has the appearance
-        if not HasAppearance(accountId, itemId) then
+        -- Debug: log the check
+        DebugPrint(string.format("[Transmog] ApplyTransmog: player=%s, slot=%d, item=%d, ALLOW_UNCOLLECTED=%s", 
+            player:GetName(), slotId, itemId, tostring(ALLOW_UNCOLLECTED_TRANSMOG)))
+        
+        -- Verify player has the appearance (skip if ALLOW_UNCOLLECTED_TRANSMOG is true)
+        if not ALLOW_UNCOLLECTED_TRANSMOG and not HasAppearance(accountId, itemId) then
+            DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: item %d not in collection for account %d", itemId, accountId))
             AIO.Msg():Add("TRANSMOG", "Error", "APPEARANCE_NOT_COLLECTED"):Send(player)
             return
         end
@@ -2152,8 +2179,8 @@ if ENABLE_AIO_BRIDGE then
         
         for slot, itemId in pairs(setData.slots) do
             if itemId and itemId > 0 then
-                -- Check if player has this appearance in collection
-                if HasAppearance(accountId, itemId) then
+                -- Check if player has this appearance in collection (skip if ALLOW_UNCOLLECTED_TRANSMOG)
+                if ALLOW_UNCOLLECTED_TRANSMOG or HasAppearance(accountId, itemId) then
                     -- Save to active transmogs
                     SaveActiveTransmog(guid, slot, itemId)
                     
@@ -2540,4 +2567,6 @@ if ENABLE_AIO_BRIDGE then
     BuildServerItemCacheAsync()
        
     print("[mod-transmog-system] AIO Server Bridge loaded")
+    print(string.format("[mod-transmog-system] Settings: ALLOW_UNCOLLECTED_TRANSMOG=%s, DEBUG=%s", 
+        tostring(ALLOW_UNCOLLECTED_TRANSMOG), tostring(ENABLE_DEBUG_MESSAGES)))
 end
