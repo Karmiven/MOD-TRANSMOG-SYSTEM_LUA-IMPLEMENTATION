@@ -170,6 +170,9 @@ local CLIENT_ITEM_CACHE = {
 -- Pending cache requests tracking
 local pendingEnchantCacheRequest = false
 
+-- Forward declaration for ENCHANT_VISUALS (actual declaration is later in the file)
+local ENCHANT_VISUALS
+
 -- Helper to load cache from SavedVariables
 local function LoadCacheFromSavedVariables()
     if TransmogDB then
@@ -190,6 +193,12 @@ local function LoadCacheFromSavedVariables()
                 end
                 print(string.format("[Transmog] Loaded item cache from SavedVariables: version=%d, %d slots, %d items, %d enchants",
                     CLIENT_ITEM_CACHE.version, slotCount, itemCount, #CLIENT_ITEM_CACHE.enchants))
+            end
+            
+            -- Also populate ENCHANT_VISUALS from cache for enchant mode
+            if CLIENT_ITEM_CACHE.enchants and #CLIENT_ITEM_CACHE.enchants > 0 then
+                ENCHANT_VISUALS = CLIENT_ITEM_CACHE.enchants
+                print(string.format("[Transmog] Loaded %d enchant visuals from cache", #ENCHANT_VISUALS))
             end
         end
         
@@ -244,6 +253,11 @@ local itemsPerPage = 15
 -- Track selected items per slot (cyan border selection)
 local slotSelectedItems = {}  -- key: slotName, value: itemId
 
+-- Track selected enchants per slot (cyan border selection in enchant mode)
+local slotSelectedEnchants = {}  -- key: slotName, value: enchantId
+local selectedEnchantId = nil
+local selectedEnchantFrame = nil
+
 -- ============================================================================
 -- Set Management Data
 -- ============================================================================
@@ -272,7 +286,7 @@ local activeEnchantTransmogs = {}
 
 -- Enchantment data received from server (populated by AIO handler)
 -- Structure: { id = number, itemVisual = number, name = string, icon = string }
-local ENCHANT_VISUALS = {}
+ENCHANT_VISUALS = {}
 
 local ENCHANT_CATEGORIES = { "All" }  -- Categories will be populated from server data
 local currentEnchantCategory = "All"
@@ -1548,8 +1562,40 @@ local function CreateItemFrame(parent, index)
             local enchantData = f.enchantData
             if button == "LeftButton" then
                 if IsShiftKeyDown() then
+                    -- Shift+Left click: Apply enchant transmog
                     ApplyEnchantTransmog(currentSlot, enchantData.id)
                     PlaySound("igCharacterInfoTab")
+                else
+                    -- Left click: Select enchant with cyan highlight
+                    -- Clear previous selection for all enchant frames
+                    for _, itemFrame in ipairs(itemFrames) do
+                        if itemFrame.enchantMode and itemFrame.selectionBorder then
+                            -- Clear selection border (may still show active border via backdrop)
+                            itemFrame.selectionBorder:Hide()
+                            -- Restore backdrop border based on active state
+                            if itemFrame.isActive then
+                                itemFrame:SetBackdropBorderColor(1, 0.4, 0.7, 1)  -- Pink for active
+                            else
+                                itemFrame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)  -- Default gray
+                            end
+                        end
+                    end
+                    
+                    -- Store selection for this slot
+                    slotSelectedEnchants[currentSlot] = enchantData.id
+                    selectedEnchantId = enchantData.id
+                    selectedEnchantFrame = f
+                    f.selectionBorder:Show()
+                    
+                    -- Set backdrop border - active takes priority over selected
+                    if f.isActive then
+                        f:SetBackdropBorderColor(1, 0.4, 0.7, 1)  -- Pink for active
+                    else
+                        f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected
+                    end
+                    
+                    PlaySound("igMainMenuOptionCheckBoxOn")
+                    
                 end
             elseif button == "RightButton" then
                 local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
@@ -1574,10 +1620,12 @@ local function CreateItemFrame(parent, index)
                     -- Clear previous selection for this slot from ALL item frames
                     for _, itemFrame in ipairs(itemFrames) do
                         if itemFrame.itemId and itemFrame.selectionBorder then
-                            -- If this frame was showing cyan border (not active transmog), clear it
-                            if itemFrame.selectionBorder:IsShown() and not itemFrame.isActive then
-                                itemFrame.selectionBorder:Hide()
-                                itemFrame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+                            itemFrame.selectionBorder:Hide()
+                            -- Restore backdrop border based on active state
+                            if itemFrame.isActive then
+                                itemFrame:SetBackdropBorderColor(0, 1, 0, 1)  -- Green for active
+                            else
+                                itemFrame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)  -- Default gray
                             end
                         end
                     end
@@ -1587,7 +1635,13 @@ local function CreateItemFrame(parent, index)
                     selectedItemId = f.itemId
                     selectedItemFrame = f
                     f.selectionBorder:Show()
-                    f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan border
+                    
+                    -- Set backdrop border - active takes priority over selected
+                    if f.isActive then
+                        f:SetBackdropBorderColor(0, 1, 0, 1)  -- Green for active
+                    else
+                        f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected
+                    end
                     
                     if dressingRoom then
                         PlaySound("igMainMenuOptionCheckBoxOn")
@@ -1616,8 +1670,9 @@ local function CreateItemFrame(parent, index)
                 GameTooltip:AddLine(L["APPLY_ENCHANT_SHIFT_CLICK"] or "|cff00ff00Shift+Click:|r Apply", 1, 1, 1)
             end
             GameTooltip:Show()
-            -- Only highlight on hover (white border), not cyan
-            if not f.isActive then
+            -- Only highlight on hover if not active and not selected
+            local isEnchantSelected = (slotSelectedEnchants[currentSlot] == enchantData.id)
+            if not f.isActive and not isEnchantSelected then
                 f:SetBackdropBorderColor(1, 1, 1, 1)
             end
             return
@@ -1644,8 +1699,8 @@ local function CreateItemFrame(parent, index)
             GameTooltip:Show()
         end
         
-        -- Highlight border on mouseover (unless it's already selected)
-        if f.itemId ~= selectedItemId then
+        -- Highlight border on mouseover (only if not active and not selected)
+        if not f.isActive and f.itemId ~= selectedItemId then
             f:SetBackdropBorderColor(1, 1, 1, 1)
         end
     end)
@@ -1656,8 +1711,11 @@ local function CreateItemFrame(parent, index)
         
         -- Handle enchant mode
         if f.enchantMode then
+            local isEnchantSelected = f.enchantData and (slotSelectedEnchants[currentSlot] == f.enchantData.id)
             if f.isActive then
                 f:SetBackdropBorderColor(1, 0.4, 0.7, 1)  -- Pink for active enchant
+            elseif isEnchantSelected then
+                f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected enchant
             else
                 f:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)  -- Default gray
             end
@@ -1665,10 +1723,11 @@ local function CreateItemFrame(parent, index)
         end
         
         -- Restore border based on state for item mode
-        if f.itemId == selectedItemId then
-            f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected
-        elseif f.isActive then
+        -- Priority: Active (green) > Selected (cyan) > Default (gray)
+        if f.isActive then
             f:SetBackdropBorderColor(0, 1, 0, 1)  -- Green for active
+        elseif f.itemId == selectedItemId then
+            f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected
         else
             f:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)  -- Default gray
         end
@@ -1698,60 +1757,59 @@ local function SetupItemModel(frame, slotName)
     
     frame.isLoaded = true
     
-    -- Check if this item is selected for this slot
-    local isSelected = (slotSelectedItems[slotName] and slotSelectedItems[slotName] == frame.itemId)
-    
-    if isSelected then
-        frame.selectionBorder:Show()
-        frame:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan border
-        selectedItemFrame = frame
-        selectedItemId = frame.itemId
-    else
-        frame.selectionBorder:Hide()
-    end
-    
     -- Check if this is the active transmog for current slot
     local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
     local activeItemId = activeTransmogs[slotId]
     local isActive = (activeItemId and activeItemId == frame.itemId)
     frame.isActive = isActive
     
+    -- Check if this item is selected for this slot
+    local isSelected = (slotSelectedItems[slotName] and slotSelectedItems[slotName] == frame.itemId)
+    
+    -- Handle selection border - show if selected (regardless of active state)
+    if isSelected then
+        frame.selectionBorder:Show()
+        selectedItemFrame = frame
+        selectedItemId = frame.itemId
+    else
+        frame.selectionBorder:Hide()
+    end
+    
+    -- Handle active state - backdrop border color takes priority
+    -- Priority for backdrop border: Active (green) > Selected (cyan) > Default (gray)
     if isActive then
+        -- Active transmog gets green backdrop border
         frame.activeGlow:Show()
         frame.activeText:Show()
         frame:SetBackdropBorderColor(0, 1, 0, 1)
         frame:SetBackdropColor(0.1, 0.2, 0.1, 1)
+    elseif isSelected then
+        -- Selected but not active gets cyan backdrop border
+        frame.activeGlow:Hide()
+        frame.activeText:Hide()
+        frame:SetBackdropBorderColor(0, 1, 1, 1)
+        frame:SetBackdropColor(0.15, 0.15, 0.15, 1)
     else
+        -- Not active and not selected
         frame.activeGlow:Hide()
         frame.activeText:Hide()
         frame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+        frame:SetBackdropColor(0.15, 0.15, 0.15, 1)
     end
     
     if IsAppearanceCollected(frame.itemId) then
         frame.collectedIcon:Show()
         frame.newIcon:Hide()
-        if not isActive then
-            frame:SetBackdropColor(0.15, 0.15, 0.15, 1)
-            frame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
-        end
-        -- Full opacity for collected items
         model:SetAlpha(1.0)
     else
         frame.collectedIcon:Hide()
         frame.newIcon:Show()
+        model:SetAlpha(0.5)
         if not isActive then
-            -- NEW: Grey/desaturated styling for uncollected items
+            -- Grey/desaturated styling for uncollected items
             frame:SetBackdropColor(0.1, 0.1, 0.1, 1)
             frame:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
         end
-        -- NEW: Reduced opacity for uncollected items (greyed out effect)
-        model:SetAlpha(0.5)
-    end
-    
-    -- If this frame is selected but not active, ensure cyan border is shown
-    if isSelected and not isActive then
-        frame.selectionBorder:Show()
-        frame:SetBackdropBorderColor(0, 1, 1, 1)
     end
 end
 
@@ -1964,18 +2022,30 @@ UpdateEnchantGrid = function()
             frame.enchantName:SetText(enchantData.name)
             frame.enchantName:Show()
             
-            -- Set border color - use pink (1, 0.4, 0.7) for active
+            -- Set border color - use pink (1, 0.4, 0.7) for active, cyan for selected
             local isActive = (activeEnchantId == enchantData.id)
+            local isSelected = (slotSelectedEnchants[currentSlot] == enchantData.id)
             frame.isActive = isActive
+            
+            -- Handle selection border - show if selected (regardless of active state)
+            if isSelected then
+                if frame.selectionBorder then frame.selectionBorder:Show() end
+            else
+                if frame.selectionBorder then frame.selectionBorder:Hide() end
+            end
+            
+            -- Handle backdrop border color - priority: Active (pink) > Selected (cyan) > Default (gray)
             if isActive then
                 frame:SetBackdropBorderColor(1, 0.4, 0.7, 1)  -- Pink for active enchant
                 frame:SetBackdropColor(0.2, 0.1, 0.15, 1)    -- Slight pink background
+            elseif isSelected then
+                frame:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected
+                frame:SetBackdropColor(0.1, 0.15, 0.15, 1)  -- Slight cyan background
             else
                 frame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
                 frame:SetBackdropColor(0.15, 0.15, 0.15, 1)
             end
             
-            if frame.selectionBorder then frame.selectionBorder:Hide() end
             if frame.collectedIcon then frame.collectedIcon:Hide() end
             if frame.activeText then frame.activeText:Hide() end
             if frame.newIcon then frame.newIcon:Hide() end
@@ -2262,14 +2332,14 @@ local function CreateSlotButton(parent, slotName)
     btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
     btn:SetCheckedTexture("Interface\\Buttons\\CheckButtonHilight")
     
-    -- Create overlay icon for active transmog
-    local transmogIcon = btn:CreateTexture(nil, "OVERLAY")
+    -- Create overlay icon for active transmog (ARTWORK layer so border can be on top)
+    local transmogIcon = btn:CreateTexture(nil, "ARTWORK")
     transmogIcon:SetSize(28, 28)
     transmogIcon:SetPoint("CENTER")
     transmogIcon:Hide()
     btn.transmogIcon = transmogIcon
     
-    -- Create active indicator border
+    -- Create active indicator border (OVERLAY layer - on top of transmogIcon)
     local activeBorder = btn:CreateTexture(nil, "OVERLAY")
     activeBorder:SetSize(48, 48)
     activeBorder:SetPoint("CENTER")
@@ -2281,61 +2351,122 @@ local function CreateSlotButton(parent, slotName)
     
     btn.slotName = slotName
     
-    -- Function to update slot appearance
+    -- Helper to find enchant icon by ID
+    local function GetEnchantIcon(enchantId)
+        for _, enchantData in ipairs(ENCHANT_VISUALS) do
+            if enchantData.id == enchantId then
+                return enchantData.icon
+            end
+        end
+        return nil
+    end
+    
+    -- Function to update slot appearance based on current mode
     btn.UpdateTransmogIcon = function(self)
         local slotId = SLOT_NAME_TO_EQUIP_SLOT[self.slotName]
         local activeItemId = activeTransmogs[slotId]
         local activeEnchant = activeEnchantTransmogs[slotId]
+        local isEnchantEligible = ENCHANT_ELIGIBLE_SLOTS[self.slotName]
         
-        -- Update transmog icon
-        if activeItemId then
-            local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(activeItemId)
-            if itemTexture then
-                self.transmogIcon:SetTexture(itemTexture)
-                self.transmogIcon:Show()
-            else
-                -- Item info not cached yet, try to get it
-                local tooltip = CreateFrame("GameTooltip", "TransmogIconTooltip"..activeItemId, nil, "GameTooltipTemplate")
-                tooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
-                tooltip:SetHyperlink("item:"..activeItemId)
+        -- Determine what to show based on current mode
+        if currentTransmogMode == TRANSMOG_MODE_ENCHANT and isEnchantEligible then
+            -- ENCHANT MODE: Show enchant texture, border indicates if item transmog exists
+            if activeEnchant then
+                local enchantIcon = GetEnchantIcon(activeEnchant)
+                if enchantIcon then
+                    self.transmogIcon:SetTexture(enchantIcon)
+                    self.transmogIcon:Show()
+                else
+                    self.transmogIcon:Hide()
+                end
                 
-                C_Timer.After(0.1, function()
-                    local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(activeItemId)
-                    if tex then
-                        self.transmogIcon:SetTexture(tex)
-                        self.transmogIcon:Show()
+                -- Border color: green if item also exists, pink if only enchant
+                if self.activeBorder then
+                    self.activeBorder:Show()
+                    if activeItemId then
+                        self.activeBorder:SetVertexColor(0, 1, 0, 0.7)  -- Green = item also active
                     else
-                        self.transmogIcon:Hide()
+                        self.activeBorder:SetVertexColor(1, 0.4, 0.7, 0.7)  -- Pink = only enchant
                     end
-                end)
+                end
+            elseif activeItemId then
+                -- No enchant but has item - show item icon with green border
+                local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(activeItemId)
+                if itemTexture then
+                    self.transmogIcon:SetTexture(itemTexture)
+                    self.transmogIcon:Show()
+                else
+                    self.transmogIcon:Hide()
+                end
+                if self.activeBorder then
+                    self.activeBorder:Show()
+                    self.activeBorder:SetVertexColor(0, 1, 0, 0.7)  -- Green for item
+                end
+            else
+                self.transmogIcon:Hide()
+                if self.activeBorder then
+                    self.activeBorder:Hide()
+                end
             end
         else
-            self.transmogIcon:Hide()
+            -- ITEM MODE (or non-enchant-eligible slot): Show item texture
+            if activeItemId then
+                local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(activeItemId)
+                if itemTexture then
+                    self.transmogIcon:SetTexture(itemTexture)
+                    self.transmogIcon:Show()
+                else
+                    -- Item info not cached yet, try to get it
+                    local tooltip = CreateFrame("GameTooltip", "TransmogIconTooltip"..activeItemId, nil, "GameTooltipTemplate")
+                    tooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
+                    tooltip:SetHyperlink("item:"..activeItemId)
+                    
+                    C_Timer.After(0.1, function()
+                        local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(activeItemId)
+                        if tex then
+                            self.transmogIcon:SetTexture(tex)
+                            self.transmogIcon:Show()
+                        else
+                            self.transmogIcon:Hide()
+                        end
+                    end)
+                end
+                
+                -- Border color: pink if enchant also exists, green if only item
+                if self.activeBorder then
+                    self.activeBorder:Show()
+                    if activeEnchant and isEnchantEligible then
+                        self.activeBorder:SetVertexColor(1, 0.4, 0.7, 0.7)  -- Pink = enchant also active
+                    else
+                        self.activeBorder:SetVertexColor(0, 1, 0, 0.7)  -- Green = only item
+                    end
+                end
+            elseif activeEnchant and isEnchantEligible then
+                -- No item but has enchant - show enchant icon with pink border
+                local enchantIcon = GetEnchantIcon(activeEnchant)
+                if enchantIcon then
+                    self.transmogIcon:SetTexture(enchantIcon)
+                    self.transmogIcon:Show()
+                else
+                    self.transmogIcon:Hide()
+                end
+                if self.activeBorder then
+                    self.activeBorder:Show()
+                    self.activeBorder:SetVertexColor(1, 0.4, 0.7, 0.7)  -- Pink for enchant
+                end
+            else
+                self.transmogIcon:Hide()
+                if self.activeBorder then
+                    self.activeBorder:Hide()
+                end
+            end
         end
         
-        -- Update border based on current state
+        -- Override with search matches (orange) if search is active
         local hasSearchMatches = searchActive and searchSlotResults[slotId] and #searchSlotResults[slotId] > 0
-        
-        if hasSearchMatches then
-            if self.activeBorder then
-                self.activeBorder:Show()
-                self.activeBorder:SetVertexColor(1, 0.5, 0, 0.7)  -- Orange for search matches
-            end
-        elseif activeEnchant and ENCHANT_ELIGIBLE_SLOTS[self.slotName] then
-            -- BUG 4 FIX: Show pink border for active enchant transmog
-            if self.activeBorder then
-                self.activeBorder:Show()
-                self.activeBorder:SetVertexColor(1, 0.4, 0.7, 0.7)  -- Pink for active enchant transmog
-            end
-        elseif activeItemId then
-            if self.activeBorder then
-                self.activeBorder:Show()
-                self.activeBorder:SetVertexColor(0, 1, 0, 0.7)    -- Green for active item transmog
-            end
-        else
-            if self.activeBorder then
-                self.activeBorder:Hide()
-            end
+        if hasSearchMatches and self.activeBorder then
+            self.activeBorder:Show()
+            self.activeBorder:SetVertexColor(1, 0.5, 0, 0.7)  -- Orange for search matches
         end
     end
     
@@ -2345,14 +2476,43 @@ local function CreateSlotButton(parent, slotName)
         if button == "RightButton" then
             -- Right-click to clear transmog
             local slotId = SLOT_NAME_TO_EQUIP_SLOT[self.slotName]
+            local hadTransmog = false
+            
             if activeTransmogs[slotId] then
                 RemoveTransmog(self.slotName)
-                PlaySound("igMainMenuOptionCheckBoxOn")
+                activeTransmogs[slotId] = nil
+                hadTransmog = true
             end
             -- Also check for enchant transmog to remove
             if activeEnchantTransmogs[slotId] and ENCHANT_ELIGIBLE_SLOTS[self.slotName] then
                 RemoveEnchantTransmog(self.slotName)
+                activeEnchantTransmogs[slotId] = nil
+                hadTransmog = true
+            end
+            
+            if hadTransmog then
                 PlaySound("igMainMenuOptionCheckBoxOn")
+                -- Clear selection for this slot to avoid ghost highlight
+                slotSelectedItems[self.slotName] = nil
+                slotSelectedEnchants[self.slotName] = nil
+                -- If clearing transmog for the current slot, also clear global selection
+                if self.slotName == currentSlot then
+                    selectedItemFrame = nil
+                    selectedItemId = nil
+                    selectedEnchantFrame = nil
+                    selectedEnchantId = nil
+                end
+                self:UpdateTransmogIcon()
+                -- Refresh the grid to clear any highlight
+                if currentTransmogMode == TRANSMOG_MODE_ENCHANT then
+                    if UpdateEnchantGrid then UpdateEnchantGrid() end
+                else
+                    UpdatePreviewGrid()
+                end
+            end
+            
+            for name, slotBtn in pairs(slotButtons) do
+                slotBtn:SetChecked(name == currentSlot)
             end
             return
         end
@@ -3066,6 +3226,7 @@ local function CreateMainFrame()
             end
         end
         UpdatePreviewGrid()
+        UpdateSlotButtonIcons()  -- Update slot icons/borders for new mode
     end
     
     modeToggleButton:SetScript("OnClick", function()
@@ -3144,9 +3305,29 @@ local function CreateMainFrame()
     applyBtn:SetPoint("LEFT", undressBtn, "RIGHT", 5, 0)
     applyBtn:SetText(L["APPLY"])
     applyBtn:SetScript("OnClick", function()
-        -- Apply currently selected transmog
-        print("Select an appearance and Shift+Click to apply")
-        print(L["APPLY_HINT"] or "Select an appearance and Shift+Click to apply")
+        if currentTransmogMode == TRANSMOG_MODE_ENCHANT then
+            -- Apply selected enchant
+            local selectedEnchant = slotSelectedEnchants[currentSlot]
+            if selectedEnchant then
+                ApplyEnchantTransmog(currentSlot, selectedEnchant)
+                PlaySound("igCharacterInfoTab")
+            else
+                print(L["SELECT_ENCHANT_FIRST"] or "Select an enchant to apply")
+            end
+        else
+            -- Apply selected item
+            local selectedItem = slotSelectedItems[currentSlot]
+            if selectedItem then
+                if IsAppearanceCollected(selectedItem) then
+                    ApplyTransmog(currentSlot, selectedItem)
+                    PlaySound("igCharacterInfoTab")
+                else
+                    print(L["APPEARANCE_NOT_COLLECTED"])
+                end
+            else
+                print(L["SELECT_APPEARANCE_FIRST"] or "Select an appearance to apply")
+            end
+        end
     end)
     
     -- Set management controls (below dressing room buttons)
