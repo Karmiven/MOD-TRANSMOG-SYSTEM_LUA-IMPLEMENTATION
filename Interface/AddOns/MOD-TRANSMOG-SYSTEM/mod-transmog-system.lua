@@ -162,7 +162,7 @@ local pendingTooltipChecks = {}
 local CLIENT_ITEM_CACHE = {
     version = 0,              -- Cache version from server (0 = no cache)
     isReady = false,          -- Flag indicating cache is loaded
-    bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality}, ... }
+    bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality, displayId}, ... }
     enchants = {},            -- All enchant visuals with version
     enchantVersion = 0,       -- Enchant cache version
 }
@@ -172,6 +172,94 @@ local pendingEnchantCacheRequest = false
 
 -- Forward declaration for ENCHANT_VISUALS (actual declaration is later in the file)
 local ENCHANT_VISUALS
+
+-- ============================================================================
+-- ITEM INFO PRELOADER SYSTEM
+-- ============================================================================
+-- Preloads item info for cached items so GetItemInfo works for search
+-- Without this, name search only works after hovering over items
+-- ============================================================================
+
+local itemInfoPreloader = {
+    isRunning = false,
+    queue = {},           -- Items waiting to be preloaded
+    batchSize = 50,       -- Items per frame (tunable for performance)
+    totalItems = 0,
+    processedItems = 0,
+    scanTooltip = nil,    -- Hidden tooltip for triggering item cache
+}
+
+-- Create hidden tooltip for item info preloading
+local function GetPreloadScanTooltip()
+    if not itemInfoPreloader.scanTooltip then
+        itemInfoPreloader.scanTooltip = CreateFrame("GameTooltip", "TransmogItemPreloadTooltip", nil, "GameTooltipTemplate")
+        itemInfoPreloader.scanTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
+    end
+    return itemInfoPreloader.scanTooltip
+end
+
+-- Process a batch of items
+local function ProcessPreloadBatch()
+    if not itemInfoPreloader.isRunning or #itemInfoPreloader.queue == 0 then
+        itemInfoPreloader.isRunning = false
+        if itemInfoPreloader.processedItems > 0 then
+            print(string.format("[Transmog] Item info preload complete: %d items ready for search", itemInfoPreloader.processedItems))
+        end
+        return
+    end
+    
+    local tooltip = GetPreloadScanTooltip()
+    local batchCount = 0
+    
+    while batchCount < itemInfoPreloader.batchSize and #itemInfoPreloader.queue > 0 do
+        local itemId = table.remove(itemInfoPreloader.queue, 1)
+        
+        -- Try GetItemInfo first (might already be cached)
+        local itemName = GetItemInfo(itemId)
+        if not itemName then
+            -- Not cached - use tooltip to request from server
+            tooltip:ClearLines()
+            tooltip:SetHyperlink("item:" .. itemId)
+        end
+        
+        itemInfoPreloader.processedItems = itemInfoPreloader.processedItems + 1
+        batchCount = batchCount + 1
+    end
+    
+    -- Schedule next batch
+    C_Timer.After(0.05, ProcessPreloadBatch)
+end
+
+-- Start preloading item info for all cached items
+local function PreloadCachedItemInfo()
+    if itemInfoPreloader.isRunning then
+        return  -- Already running
+    end
+    
+    if not CLIENT_ITEM_CACHE.isReady or not CLIENT_ITEM_CACHE.bySlot then
+        return  -- No cache to preload
+    end
+    
+    -- Build queue of all item IDs from cache
+    itemInfoPreloader.queue = {}
+    itemInfoPreloader.processedItems = 0
+    
+    for slotId, items in pairs(CLIENT_ITEM_CACHE.bySlot) do
+        for _, itemData in ipairs(items) do
+            local itemId = itemData[1]
+            table.insert(itemInfoPreloader.queue, itemId)
+        end
+    end
+    
+    itemInfoPreloader.totalItems = #itemInfoPreloader.queue
+    
+    if itemInfoPreloader.totalItems > 0 then
+        print(string.format("[Transmog] Preloading item info for %d cached items (enables name search)...", itemInfoPreloader.totalItems))
+        itemInfoPreloader.isRunning = true
+        -- Start processing after a short delay to not interfere with login
+        C_Timer.After(1, ProcessPreloadBatch)
+    end
+end
 
 -- Helper to load cache from SavedVariables
 local function LoadCacheFromSavedVariables()
@@ -213,6 +301,11 @@ local function LoadCacheFromSavedVariables()
                 isCollectionLoaded = true
                 print(string.format("[Transmog] Loaded %d collected items from SavedVariables", count))
             end
+        end
+        
+        -- Preload item info for search functionality (if cache is ready)
+        if CLIENT_ITEM_CACHE.isReady then
+            C_Timer.After(2, PreloadCachedItemInfo)
         end
     end
 end
@@ -360,17 +453,20 @@ local function RequestActiveTransmogsFromServer()
     AIO.Msg():Add("TRANSMOG", "RequestActiveTransmogs"):Send()
 end
 
+-- DEPRECATED: No longer used - all item data comes from local cache
+-- Kept for reference only
+--[[
 local function RequestSlotItemsFromServer(slotId, subclass, quality, collectionFilter)
-    -- NEW: Include collection filter in request (default to "Collected")
     AIO.Msg():Add("TRANSMOG", "RequestSlotItems", slotId, subclass, quality, collectionFilter or "Collected"):Send()
 end
+--]]
 
 -- ============================================================================
 -- CLIENT-SIDE CACHE FUNCTIONS
 -- ============================================================================
--- These functions handle the new cache-based system for better performance.
--- Instead of asking the server for filtered items every time, we:
--- 1. Download the full item cache once (versioned)
+-- These functions handle the cache-based system for optimal performance.
+-- Instead of asking the server for filtered items, we:
+-- 1. Download the full item cache once (versioned, stored in SavedVariables)
 -- 2. Download player's collection status (small payload)
 -- 3. Filter items locally on the client
 -- ============================================================================
@@ -492,11 +588,12 @@ local function FilterCachedItemsForSlot(slotId, subclassName, qualityName, colle
     local uncollectedItems = {}
     
     for _, itemData in ipairs(cachedItems) do
-        -- itemData format: {itemId, class, subclass, quality}
+        -- itemData format: {itemId, class, subclass, quality, displayId}
         local itemId = itemData[1]
         local itemClass = itemData[2]
         local itemSubclass = itemData[3]
         local itemQuality = itemData[4]
+        local displayId = itemData[5]
         
         -- Apply subclass filter
         local passSubclass = true
@@ -523,9 +620,9 @@ local function FilterCachedItemsForSlot(slotId, subclassName, qualityName, colle
         -- Apply all filters
         if passSubclass and passQuality then
             if isCollected and showCollected then
-                table.insert(collectedItems, { itemId = itemId, collected = true })
+                table.insert(collectedItems, { itemId = itemId, collected = true, displayId = displayId })
             elseif not isCollected and showUncollected then
-                table.insert(uncollectedItems, { itemId = itemId, collected = false })
+                table.insert(uncollectedItems, { itemId = itemId, collected = false, displayId = displayId })
             end
         end
     end
@@ -583,9 +680,6 @@ local function LoadItemsForSlot(slotId, subclassName, qualityName, collectionFil
         if not pendingFullCacheRequest then
             RequestFullCacheFromServer()
         end
-        
-        -- Also use legacy request as fallback for immediate results
-        RequestSlotItemsFromServer(slotId, subclassName, qualityName, collectionFilter)
     end
 end
 
@@ -653,19 +747,20 @@ TRANSMOG_HANDLER.FullCacheData = function(player, data)
         print(string.format("[Transmog] Receiving full cache (version %d, %d chunks)", data.version, totalChunks))
     end
     
-    -- Accumulate items: each item is {slotId, itemId, class, subclass, quality}
+    -- Accumulate items: each item is {slotId, itemId, class, subclass, quality, displayId}
     if data.items then
         for _, itemData in ipairs(data.items) do
             local slotId = itemData[1]
             if not fullCacheBuffer[slotId] then
                 fullCacheBuffer[slotId] = {}
             end
-            -- Store as {itemId, class, subclass, quality}
+            -- Store as {itemId, class, subclass, quality, displayId}
             table.insert(fullCacheBuffer[slotId], {
                 itemData[2],  -- itemId
                 itemData[3],  -- class
                 itemData[4],  -- subclass
-                itemData[5]   -- quality
+                itemData[5],  -- quality
+                itemData[6]   -- displayId
             })
         end
     end
@@ -704,6 +799,9 @@ TRANSMOG_HANDLER.FullCacheData = function(player, data)
         -- Save to SavedVariables
         SaveCacheToSavedVariables()
         
+        -- Preload item info for search functionality
+        PreloadCachedItemInfo()
+        
         -- Update the display using local filtering
         local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
         if currentSlotId then
@@ -736,11 +834,10 @@ end
 -- Full cache not ready on server
 TRANSMOG_HANDLER.FullCacheNotReady = function(player, data)
     pendingFullCacheRequest = false
-    print("[Transmog] Server cache not ready, using legacy requests")
-    -- Fall back to legacy request for current slot
-    local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-    if currentSlotId then
-        RequestSlotItemsFromServer(currentSlotId, currentSubclass, currentQuality, currentCollectionFilter)
+    print("[Transmog] Server cache not ready yet - please try again shortly")
+    
+    if mainFrame and mainFrame.pageText then
+        mainFrame.pageText:SetText("Server cache building... please wait")
     end
 end
 
@@ -1496,11 +1593,10 @@ end
 -- ============================================================================
 
 local function GetItemsForSlotAndSubclass(slotName, subclass)
-    -- Items are loaded from server via RequestSlotItemsFromServer
-    -- This function returns cached data
+    -- Items are loaded from local cache (no server request)
     local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
-    if TransmogDB.slotCache and TransmogDB.slotCache[slotId] then
-        return TransmogDB.slotCache[slotId]
+    if CLIENT_ITEM_CACHE.isReady and CLIENT_ITEM_CACHE.bySlot[slotId] then
+        return CLIENT_ITEM_CACHE.bySlot[slotId]
     end
     return {}
 end
@@ -1568,6 +1664,7 @@ local function CreateItemFrame(parent, index)
     
     frame.freezeSequence = 0
     frame.itemId = nil
+    frame.displayId = nil
     frame.isLoaded = false
  
     -- Selection highlight border
@@ -1705,6 +1802,14 @@ local function CreateItemFrame(parent, index)
             GameTooltip:SetOwner(f, "ANCHOR_TOPRIGHT")
             GameTooltip:SetHyperlink("item:"..f.itemId)
             GameTooltip:AddLine(" ")
+            
+            -- Add Item ID and Display ID for cross-locale sharing
+            GameTooltip:AddLine(string.format("Item ID: %d", f.itemId), 0.6, 0.6, 0.6)
+            if f.displayId then
+                GameTooltip:AddLine(string.format("Display ID: %d", f.displayId), 0.6, 0.6, 0.6)
+            end
+            GameTooltip:AddLine(" ")
+            
             -- Use stored collection status from frame, fallback to global check
             local isCollected = f.isCollected
             if isCollected == nil then
@@ -1845,18 +1950,21 @@ local function SetupItemModel(frame, slotName)
 end
 
 local function UpdateItemFrame(frame, itemData, slotName)
-    -- NEW: Handle both old format (just itemId) and new format (table with itemId and collected)
-    local itemId, isCollected
+    -- Handle both old format (just itemId) and new format (table with itemId, collected, displayId)
+    local itemId, isCollected, displayId
     if type(itemData) == "table" then
         itemId = itemData.itemId
         isCollected = itemData.collected
+        displayId = itemData.displayId
     else
         itemId = itemData
         isCollected = IsAppearanceCollected(itemData)
+        displayId = nil  -- Legacy format has no displayId
     end
     
     frame.itemId = itemId
-    frame.isCollected = isCollected  -- NEW: Store collected status on frame
+    frame.displayId = displayId  -- Store displayId for tooltip
+    frame.isCollected = isCollected
     frame.isLoaded = false
     frame.model:SetScript("OnUpdateModel", nil)
     frame.collectedIcon:Hide()
@@ -2031,6 +2139,7 @@ UpdateEnchantGrid = function()
             frame.enchantMode = true
             frame.enchantData = enchantData
             frame.itemId = nil
+            frame.displayId = nil
             
             -- Hide model, show icon instead
             if frame.model then frame.model:Hide() end
@@ -3161,6 +3270,7 @@ local function CreateSearchBar(parent, previewGrid)
             
             for _, itemData in ipairs(items) do
                 local itemId = itemData[1]
+                local displayId = itemData[5]  -- displayId is now cached
                 local match = false
                 
                 if searchType == "id" then
@@ -3172,20 +3282,26 @@ local function CreateSearchBar(parent, previewGrid)
                     end
                 elseif searchType == "name" then
                     -- Match by item name (requires GetItemInfo)
+                    -- Note: GetItemInfo returns nil until item is cached by WoW client
+                    -- The preloader runs after cache load to populate item info
                     local itemName = GetItemInfo(itemId)
                     if itemName and itemName:lower():find(searchLower, 1, true) then
                         match = true
                     end
                 elseif searchType == "displayid" then
-                    -- DisplayID search requires server - we don't cache displayIds
-                    -- Return false to trigger server search
-                    print("[Transmog] DisplayID search requires server connection")
-                    return false
+                    -- Match by display ID (now cached!)
+                    if displayId then
+                        if searchNumber and displayId == searchNumber then
+                            match = true
+                        elseif tostring(displayId):find(searchText, 1, true) then
+                            match = true
+                        end
+                    end
                 end
                 
                 if match then
                     local isCollected = collectedAppearances[itemId] == true
-                    local resultItem = { itemId = itemId, collected = isCollected }
+                    local resultItem = { itemId = itemId, collected = isCollected, displayId = displayId }
                     table.insert(allResults, resultItem)
                     table.insert(slotResults[slotId], resultItem)
                 end
@@ -3198,6 +3314,11 @@ local function CreateSearchBar(parent, previewGrid)
         searchSlotResults = slotResults
         
         print(string.format("[Transmog] Local search found %d total items", #searchResults))
+        
+        -- Warn if name search found no results while preload is still running
+        if searchType == "name" and #searchResults == 0 and itemInfoPreloader.isRunning then
+            print("[Transmog] Item info still loading - try searching again in a moment")
+        end
         
         -- Count matches per slot for debugging
         if slotButtons then
@@ -3235,12 +3356,15 @@ local function CreateSearchBar(parent, previewGrid)
             if #searchResults > 0 then
                 mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages) .. " | " .. 
                     string.format("Search: %d items (%d in %s)", #searchResults, #currentItems, currentSlot))
+            elseif searchType == "name" and itemInfoPreloader.isRunning then
+                mainFrame.pageText:SetText("Loading item names... try again shortly")
             else
                 mainFrame.pageText:SetText("No results found")
             end
         end
         
-        return true
+        -- Return number of results
+        return #searchResults
     end
     
     -- Create the PerformSearch function BEFORE using it
@@ -3249,21 +3373,15 @@ local function CreateSearchBar(parent, previewGrid)
         if searchText and searchText ~= "" then
             lastSearchText = searchText
             
-            -- Try local search first (works even with AIO disabled)
+            -- Use local cache for search (cache is authoritative)
             if CLIENT_ITEM_CACHE.isReady then
-                local success = PerformLocalSearch(searchText, selectedSearchType)
-                if success then
-                    return  -- Local search worked
-                end
-            end
-            
-            -- Fall back to server search (displayid requires server, or cache not ready)
-            if AIO then
-                local locale = GetLocale()
-                -- Search with slot -1 to get all items
-                AIO.Msg():Add("TRANSMOG", "SearchItems", -1, selectedSearchType, searchText, locale):Send()
+                PerformLocalSearch(searchText, selectedSearchType)
             else
-                print("[Transmog] Search not available - cache not ready and AIO not loaded")
+                -- Cache not ready yet
+                print("[Transmog] Item cache not ready - please wait")
+                if mainFrame and mainFrame.pageText then
+                    mainFrame.pageText:SetText("Cache loading... please wait")
+                end
             end
         else
             ClearSearch()
@@ -3788,8 +3906,10 @@ initFrame:SetScript("OnEvent", function(self, event)
                     if not pendingFullCacheRequest then
                         RequestFullCacheFromServer()
                     end
-                    -- Also use legacy as fallback for immediate results
-                    RequestSlotItemsFromServer(slotId, currentSubclass, currentQuality, currentCollectionFilter)
+                    
+                    if mainFrame and mainFrame.pageText then
+                        mainFrame.pageText:SetText("Loading cache...")
+                    end
                 end
             end
             

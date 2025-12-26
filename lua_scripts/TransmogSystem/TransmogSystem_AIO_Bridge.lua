@@ -132,6 +132,23 @@ end
 -- Set to false to disable debug messages in the server console
 local ENABLE_DEBUG_MESSAGES = false
 
+
+-- ──────────────────────────────── CACHE VERSION# ────────────────────────────────
+
+-- CACHE_VERSION
+-- Controls the client-side cache version. Clients compare their stored version
+-- with this value - if different, they re-download the full item cache.
+-- 
+-- IMPORTANT: Only increment this number when the transmog item database changes:
+--   - New items added to world database
+--   - Items added/removed from ITEM_BLACKLIST
+--   - ALLOWED_QUALITIES changes
+--   - Any change affecting which items appear in the transmog grid
+--
+-- If not changed, clients keep their cached item list across server restarts,
+-- significantly reducing login bandwidth and database load.
+local CACHE_VERSION = 1
+
 	
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
 -- ║                                    SCRIPT                                    ║
@@ -160,9 +177,9 @@ if ENABLE_AIO_BRIDGE then
 
     -- Global cache storage (populated on server startup)
     local SERVER_ITEM_CACHE = {
-        version = 0,              -- Cache version (changes when server restarts)
+        version = 0,              -- Cache version (uses CACHE_VERSION setting)
         isReady = false,          -- Flag indicating cache is built
-        bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality}, ... }
+        bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality, displayId}, ... }
         enchants = {},            -- All enchant visuals
     }
 
@@ -291,8 +308,8 @@ if ENABLE_AIO_BRIDGE then
     local function BuildServerItemCacheAsync()
         DebugPrint("[mod-transmog-system] Building server item cache (async)...")
         
-        -- Generate cache version based on server start time
-        SERVER_ITEM_CACHE.version = os.time()
+        -- Use configurable cache version (only changes when admin updates CACHE_VERSION setting)
+        SERVER_ITEM_CACHE.version = CACHE_VERSION
         SERVER_ITEM_CACHE.bySlot = {}
         
         -- Initialize all slot tables
@@ -309,9 +326,9 @@ if ENABLE_AIO_BRIDGE then
         end
         local qualityFilter = table.concat(qualityList, ",")
         
-        -- Query ALL transmog-eligible items at once (async)
+        -- Query ALL transmog-eligible items at once (async) - includes displayid
         local sql = string.format(
-            "SELECT entry, class, subclass, InventoryType, Quality FROM item_template " ..
+            "SELECT entry, class, subclass, InventoryType, Quality, displayid FROM item_template " ..
             "WHERE displayid > 0 AND Quality IN (%s) ORDER BY entry",
             qualityFilter
         )
@@ -325,18 +342,20 @@ if ENABLE_AIO_BRIDGE then
                     local itemSubclass = Q:GetUInt8(2)
                     local invType = Q:GetUInt8(3)
                     local quality = Q:GetUInt8(4)
+                    local displayId = Q:GetUInt32(5)
                     
                     -- Map inventory type to slot
                     local slotId = INV_TYPE_TO_SLOT[invType]
                     
                     -- Skip blacklisted items and items without a valid slot
                     if slotId and not IsItemBlacklisted(itemId) then
-                        -- Store compact item data: {itemId, class, subclass, quality}
+                        -- Store compact item data: {itemId, class, subclass, quality, displayId}
                         table.insert(SERVER_ITEM_CACHE.bySlot[slotId], {
                             itemId,
                             itemClass,
                             itemSubclass,
-                            quality
+                            quality,
+                            displayId
                         })
                         count = count + 1
                     end
@@ -1302,16 +1321,17 @@ if ENABLE_AIO_BRIDGE then
             player:GetName(), tostring(clientVersion), SERVER_ITEM_CACHE.version))
         
         -- Count total items across all slots for chunking
-        local allItems = {}  -- { {slotId, itemId, class, subclass, quality}, ... }
+        local allItems = {}  -- { {slotId, itemId, class, subclass, quality, displayId}, ... }
         for slotId, items in pairs(SERVER_ITEM_CACHE.bySlot) do
             for _, itemData in ipairs(items) do
-                -- itemData is {itemId, class, subclass, quality}
+                -- itemData is {itemId, class, subclass, quality, displayId}
                 table.insert(allItems, {
                     slotId,
                     itemData[1],  -- itemId
                     itemData[2],  -- class
                     itemData[3],  -- subclass
-                    itemData[4]   -- quality
+                    itemData[4],  -- quality
+                    itemData[5]   -- displayId
                 })
             end
         end
@@ -1361,7 +1381,7 @@ if ENABLE_AIO_BRIDGE then
         
         local items = SERVER_ITEM_CACHE.bySlot[slotId] or {}
         
-        -- Send in chunks of 100 (each item is compact: {itemId, class, subclass, quality})
+        -- Send in chunks of 100 (each item is compact: {itemId, class, subclass, quality, displayId})
         local chunkSize = 100
         local totalChunks = math.ceil(#items / chunkSize)
         if totalChunks == 0 then totalChunks = 1 end
@@ -1372,7 +1392,7 @@ if ENABLE_AIO_BRIDGE then
             local chunkItems = {}
             
             for i = startIdx, endIdx do
-                -- Items stored as {itemId, class, subclass, quality}
+                -- Items stored as {itemId, class, subclass, quality, displayId}
                 table.insert(chunkItems, items[i])
             end
             
@@ -2567,6 +2587,6 @@ if ENABLE_AIO_BRIDGE then
     BuildServerItemCacheAsync()
        
     print("[mod-transmog-system] AIO Server Bridge loaded")
-    print(string.format("[mod-transmog-system] Settings: ALLOW_UNCOLLECTED_TRANSMOG=%s, DEBUG=%s", 
-        tostring(ALLOW_UNCOLLECTED_TRANSMOG), tostring(ENABLE_DEBUG_MESSAGES)))
+    print(string.format("[mod-transmog-system] Settings: ALLOW_UNCOLLECTED_TRANSMOG=%s, DEBUG=%s, CACHE_VERSION=%d", 
+        tostring(ALLOW_UNCOLLECTED_TRANSMOG), tostring(ENABLE_DEBUG_MESSAGES), CACHE_VERSION))
 end
