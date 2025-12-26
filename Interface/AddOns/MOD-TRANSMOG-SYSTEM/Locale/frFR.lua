@@ -163,3 +163,44 @@ L["Holy"] = "Sacré"
 L["Shadow"] = "Ombre"
 L["Physical"] = "Physique"
 L["Shaman"] = "Chaman"
+-- Settings Panel
+L["SETTINGS"] = "Paramètres"
+L["BACK"] = "Retour"
+L["SETTINGS_TITLE"] = "Paramètres Transmog"
+L["SETTINGS_TOOLTIP"] = "Paramètres"
+L["SETTINGS_DESC"] = "Cliquez pour ouvrir les paramètres"
+L["BACK_TOOLTIP"] = "Retour aux objets"
+L["BACK_DESC"] = "Cliquez pour revenir à la grille d'objets"
+
+-- Settings Sections
+L["SETTINGS_DISPLAY"] = "Paramètres d'affichage"
+L["SETTINGS_TOOLTIP_SECTION"] = "Paramètres des infobulles"
+L["SETTINGS_INFO"] = "Informations"
+
+-- Display Settings
+L["SETTING_BACKGROUND"] = "Fond de la cabine d'essayage :"
+L["SETTING_BG_AUTO"] = "Auto (Classe)"
+L["SETTING_PREVIEW_MODE"] = "Mode d'aperçu de la grille :"
+L["SETTING_PREVIEW_CLASSIC"] = "Classique (WoW 3.3.5)"
+L["SETTING_PREVIEW_HD"] = "HD (Requiert un patch de modèles HD)"
+
+-- Tooltip Settings
+L["SETTING_SHOW_ITEM_ID"] = "Afficher l'ID de l'objet dans l'infobulle"
+L["SETTING_SHOW_DISPLAY_ID"] = "Afficher le Display ID dans l'infobulle"
+L["SETTING_SHOW_COLLECTED"] = "Afficher \"Apparence collectée\" dans l'infobulle"
+L["SETTING_SHOW_NEW"] = "Afficher \"Nouvelle apparence\" dans l'infobulle"
+
+-- Settings Info
+L["SETTINGS_INFO_TEXT"] = "|cff888888Paramètres globaux|r s'appliquent à tous les personnages.\n|cff888888Paramètres par personnage|r (fond, mode d'aperçu) sont sauvegardés par personnage.\n\nLes paramètres sont sauvegardés automatiquement."
+
+-- Class Names (for background dropdown)
+L["CLASS_WARRIOR"] = "Guerrier"
+L["CLASS_PALADIN"] = "Paladin"
+L["CLASS_HUNTER"] = "Chasseur"
+L["CLASS_ROGUE"] = "Voleur"
+L["CLASS_PRIEST"] = "Prêtre"
+L["CLASS_DEATHKNIGHT"] = "Chevalier de la mort"
+L["CLASS_SHAMAN"] = "Chaman"
+L["CLASS_MAGE"] = "Mage"
+L["CLASS_WARLOCK"] = "Démoniste"
+L["CLASS_DRUID"] = "Druide"

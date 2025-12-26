@@ -163,3 +163,44 @@ L["Holy"] = "Holy"
 L["Shadow"] = "Shadow"
 L["Physical"] = "Physical"
 L["Shaman"] = "Shaman"
+-- Settings Panel
+L["SETTINGS"] = "Settings"
+L["BACK"] = "Back"
+L["SETTINGS_TITLE"] = "Transmog Settings"
+L["SETTINGS_TOOLTIP"] = "Settings"
+L["SETTINGS_DESC"] = "Click to open settings"
+L["BACK_TOOLTIP"] = "Back to Items"
+L["BACK_DESC"] = "Click to return to item grid"
+
+-- Settings Sections
+L["SETTINGS_DISPLAY"] = "Display Settings"
+L["SETTINGS_TOOLTIP_SECTION"] = "Tooltip Settings"
+L["SETTINGS_INFO"] = "Information"
+
+-- Display Settings
+L["SETTING_BACKGROUND"] = "Dressing Room Background:"
+L["SETTING_BG_AUTO"] = "Auto (Class)"
+L["SETTING_PREVIEW_MODE"] = "Grid Preview Mode:"
+L["SETTING_PREVIEW_CLASSIC"] = "Classic (WoW 3.3.5)"
+L["SETTING_PREVIEW_HD"] = "HD (requires HD Model patch)"
+
+-- Tooltip Settings
+L["SETTING_SHOW_ITEM_ID"] = "Show Item ID in tooltip"
+L["SETTING_SHOW_DISPLAY_ID"] = "Show Display ID in tooltip"
+L["SETTING_SHOW_COLLECTED"] = "Show \"Appearance Collected\" in tooltip"
+L["SETTING_SHOW_NEW"] = "Show \"New Appearance\" in tooltip"
+
+-- Settings Info
+L["SETTINGS_INFO_TEXT"] = "|cff888888Account-wide settings|r apply to all characters.\n|cff888888Character-specific settings|r (background, preview mode) are saved per character.\n\nSettings are saved automatically when changed."
+
+-- Class Names (for background dropdown)
+L["CLASS_WARRIOR"] = "Warrior"
+L["CLASS_PALADIN"] = "Paladin"
+L["CLASS_HUNTER"] = "Hunter"
+L["CLASS_ROGUE"] = "Rogue"
+L["CLASS_PRIEST"] = "Priest"
+L["CLASS_DEATHKNIGHT"] = "Death Knight"
+L["CLASS_SHAMAN"] = "Shaman"
+L["CLASS_MAGE"] = "Mage"
+L["CLASS_WARLOCK"] = "Warlock"
+L["CLASS_DRUID"] = "Druid"

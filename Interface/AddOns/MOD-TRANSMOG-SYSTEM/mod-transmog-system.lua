@@ -12,10 +12,79 @@ local AIO = AIO or require("AIO")
 -- ============================================================================
 -- SavedVariables
 -- ============================================================================
--- SavedVariables (minimal - just UI settings)
+-- TransmogDB: Cache and collection data
+-- TransmogSettings: User preferences (separate file)
 -- ============================================================================
 
-TransmogDB = TransmogDB or {}  -- For minimap position only
+TransmogDB = TransmogDB or {}  -- For cache, collection, minimap position
+TransmogSettings = TransmogSettings or {}  -- For user preferences
+
+-- ============================================================================
+-- Settings System
+-- ============================================================================
+-- Settings are split into account-wide and character-specific
+-- Character settings override account settings where applicable
+-- ============================================================================
+
+local function GetCharacterKey()
+    local name = UnitName("player")
+    local realm = GetRealmName()
+    return name .. "-" .. realm
+end
+
+local function InitializeSettings()
+    -- Account-wide defaults
+    TransmogSettings.account = TransmogSettings.account or {
+        showCollectedTooltip = true,       -- Show "Appearance Collected" in tooltip
+        showNewAppearanceTooltip = true,   -- Show "New Appearance" in tooltip
+        showItemIdTooltip = true,          -- Show Item ID in tooltip
+        showDisplayIdTooltip = true,       -- Show Display ID in tooltip
+    }
+    
+    -- Character-specific defaults (keyed by character name-realm)
+    TransmogSettings.characters = TransmogSettings.characters or {}
+    
+    local charKey = GetCharacterKey()
+    TransmogSettings.characters[charKey] = TransmogSettings.characters[charKey] or {
+        backgroundOverride = nil,  -- nil = use class default, or class name string
+        previewMode = "classic",   -- "classic" or "hd" - character-specific
+    }
+end
+
+-- Get a setting value (character-specific if exists, else account-wide)
+local function GetSetting(key)
+    local charKey = GetCharacterKey()
+    local charSettings = TransmogSettings.characters and TransmogSettings.characters[charKey]
+    
+    -- Check character-specific first
+    if charSettings and charSettings[key] ~= nil then
+        return charSettings[key]
+    end
+    
+    -- Fall back to account-wide
+    if TransmogSettings.account and TransmogSettings.account[key] ~= nil then
+        return TransmogSettings.account[key]
+    end
+    
+    return nil
+end
+
+-- Set a setting value
+local function SetSetting(key, value, characterSpecific)
+    if characterSpecific then
+        local charKey = GetCharacterKey()
+        TransmogSettings.characters = TransmogSettings.characters or {}
+        TransmogSettings.characters[charKey] = TransmogSettings.characters[charKey] or {}
+        TransmogSettings.characters[charKey][key] = value
+    else
+        TransmogSettings.account = TransmogSettings.account or {}
+        TransmogSettings.account[key] = value
+    end
+end
+
+-- Export for use elsewhere
+Transmog.GetSetting = GetSetting
+Transmog.SetSetting = SetSetting
 
 -- ============================================================================
 -- Search Bar variables
@@ -1535,7 +1604,12 @@ local function IsWeaponSubclass(subclass)
 end
 
 -- Preview setup version: "classic" for old models, "hd" for HD models
-local previewSetupVersion = "classic"
+local previewSetupVersion = "classic"  -- Will be updated from settings
+
+-- Function to update preview mode from settings
+local function UpdatePreviewMode()
+    previewSetupVersion = GetSetting("previewMode") or "classic"
+end
 
 -- Get preview setup from database
 local function GetPreviewSetup(slotName, subclass)
@@ -1803,23 +1877,32 @@ local function CreateItemFrame(parent, index)
             GameTooltip:SetHyperlink("item:"..f.itemId)
             GameTooltip:AddLine(" ")
             
-            -- Add Item ID and Display ID for cross-locale sharing
-            GameTooltip:AddLine(string.format("Item ID: %d", f.itemId), 0.6, 0.6, 0.6)
-            if f.displayId then
+            -- Add Item ID and Display ID for cross-locale sharing (if enabled)
+            if GetSetting("showItemIdTooltip") ~= false then
+                GameTooltip:AddLine(string.format("Item ID: %d", f.itemId), 0.6, 0.6, 0.6)
+            end
+            if f.displayId and GetSetting("showDisplayIdTooltip") ~= false then
                 GameTooltip:AddLine(string.format("Display ID: %d", f.displayId), 0.6, 0.6, 0.6)
             end
-            GameTooltip:AddLine(" ")
             
             -- Use stored collection status from frame, fallback to global check
             local isCollected = f.isCollected
             if isCollected == nil then
                 isCollected = IsAppearanceCollected(f.itemId)
             end
+            
+            -- Show collection status (if enabled)
             if isCollected then
-                GameTooltip:AddLine(L["APPEARANCE_COLLECTED"])
+                if GetSetting("showCollectedTooltip") ~= false then
+                    GameTooltip:AddLine(" ")
+                    GameTooltip:AddLine(L["APPEARANCE_COLLECTED"])
+                end
                 GameTooltip:AddLine(L["APPLY_APPEARANCE_SHIFT_CLICK"], 0.7, 0.7, 0.7)
             else
-                GameTooltip:AddLine(L["NEW_APPEARANCE"])
+                if GetSetting("showNewAppearanceTooltip") ~= false then
+                    GameTooltip:AddLine(" ")
+                    GameTooltip:AddLine(L["NEW_APPEARANCE"])
+                end
             end
             GameTooltip:AddLine(L["PREVIEW_APPEARANCE_CLICK"], 0.7, 0.7, 0.7)
             
@@ -2852,6 +2935,36 @@ end
 -- Dressing Room
 -- ============================================================================
 
+-- Available background options for settings
+local BACKGROUND_OPTIONS = {
+    { value = nil, label = "Auto (Class)" },
+    { value = "WARRIOR", label = "Warrior" },
+    { value = "PALADIN", label = "Paladin" },
+    { value = "HUNTER", label = "Hunter" },
+    { value = "ROGUE", label = "Rogue" },
+    { value = "PRIEST", label = "Priest" },
+    { value = "DEATHKNIGHT", label = "Death Knight" },
+    { value = "SHAMAN", label = "Shaman" },
+    { value = "MAGE", label = "Mage" },
+    { value = "WARLOCK", label = "Warlock" },
+    { value = "DRUID", label = "Druid" },
+}
+Transmog.BACKGROUND_OPTIONS = BACKGROUND_OPTIONS
+
+local TEXTURE_PATHS = {
+    WARRIOR = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarrior",
+    PALADIN = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroompaladin",
+    HUNTER = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomhunter",
+    ROGUE = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomrogue",
+    PRIEST = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroompriest",
+    DEATHKNIGHT = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdeathknight",
+    SHAMAN = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomshaman",
+    MAGE = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroommage",
+    WARLOCK = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock",
+    DRUID = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdruid"
+}
+Transmog.TEXTURE_PATHS = TEXTURE_PATHS
+
 local function CreateDressingRoom(parent)
     local frame = CreateFrame("Frame", "$parentDressingRoom", parent)
     frame:SetSize(280, 460)
@@ -2861,23 +2974,14 @@ local function CreateDressingRoom(parent)
     bgTexture:SetPoint("TOPLEFT", 4, -4)
     bgTexture:SetPoint("BOTTOMRIGHT", -4, 4)
     
-    -- Get player class and set appropriate texture
+    -- Get player class
     local _, playerClass = UnitClass("player")
-    local texturePaths = {
-        WARRIOR = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarrior",
-        PALADIN = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroompaladin",
-        HUNTER = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomhunter",
-        ROGUE = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomrogue",
-        PRIEST = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroompriest",
-        DEATHKNIGHT = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdeathknight",
-        SHAMAN = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomshaman",
-        MAGE = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroommage",
-        WARLOCK = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock",
-        DRUID = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdruid"
-    }
     
-    -- Set texture based on class, default to warlock if not found
-    local texturePath = texturePaths[playerClass] or "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock"
+    -- Check for background override setting
+    local backgroundClass = GetSetting("backgroundOverride") or playerClass
+    
+    -- Set texture based on class or override
+    local texturePath = TEXTURE_PATHS[backgroundClass] or TEXTURE_PATHS[playerClass] or TEXTURE_PATHS.WARLOCK
     bgTexture:SetTexture(texturePath)
     
     -- Calculate cropping for square texture in portrait frame
@@ -2891,6 +2995,8 @@ local function CreateDressingRoom(parent)
     bgTexture:SetTexCoord(left, right, 0, 1)
     
     frame.bgTexture = bgTexture
+    frame.texCoordLeft = left
+    frame.texCoordRight = right
     
     frame:SetBackdrop({
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -2902,11 +3008,12 @@ local function CreateDressingRoom(parent)
     frame:SetBackdropColor(0, 0, 0, 0)
     frame:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
     
-    function frame:UpdateBackgroundTexture()
+    function frame:UpdateBackgroundTexture(overrideClass)
         local _, currentClass = UnitClass("player")
-        local newTexturePath = texturePaths[currentClass] or "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock"
+        local backgroundClass = overrideClass or GetSetting("backgroundOverride") or currentClass
+        local newTexturePath = TEXTURE_PATHS[backgroundClass] or TEXTURE_PATHS[currentClass] or TEXTURE_PATHS.WARLOCK
         self.bgTexture:SetTexture(newTexturePath)
-        self.bgTexture:SetTexCoord(left, right, 0, 1)
+        self.bgTexture:SetTexCoord(self.texCoordLeft, self.texCoordRight, 0, 1)
     end
     
     -- Create model frame
@@ -3456,6 +3563,222 @@ local function CreateSearchBar(parent, previewGrid)
 end
 
 -- ============================================================================
+-- Settings Panel
+-- ============================================================================
+
+local settingsPanel = nil
+local isSettingsVisible = false
+
+local function CreateSettingsPanel(parent)
+    local frame = CreateFrame("Frame", "$parentSettingsPanel", parent)
+    frame:SetSize(620, 460)  -- Same size as preview grid
+    frame:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, 
+        tileSize = 16, 
+        edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    frame:SetBackdropColor(0.1, 0.1, 0.1, 0.95)
+    frame:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+    frame:Hide()  -- Hidden by default
+    
+    -- Title
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOP", 0, -15)
+    title:SetText(L["SETTINGS_TITLE"] or "Transmog Settings")
+    title:SetTextColor(1, 0.82, 0)
+    
+    -- Scrollable content area
+    local scrollFrame = CreateFrame("ScrollFrame", "$parentScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 10, -45)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -30, 10)
+    
+    local content = CreateFrame("Frame", "$parentContent", scrollFrame)
+    content:SetSize(560, 600)  -- Height will expand as needed
+    scrollFrame:SetScrollChild(content)
+    
+    local yOffset = 0
+    local sectionSpacing = 25
+    local itemSpacing = 30
+    
+    -- Helper function to create section header
+    local function CreateSectionHeader(text)
+        local header = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        header:SetPoint("TOPLEFT", 10, yOffset)
+        header:SetText(text)
+        header:SetTextColor(1, 0.82, 0)
+        yOffset = yOffset - 20
+        
+        local line = content:CreateTexture(nil, "ARTWORK")
+        line:SetPoint("TOPLEFT", 10, yOffset)
+        line:SetSize(540, 1)
+        line:SetColorTexture(0.5, 0.5, 0.5, 0.5)
+        yOffset = yOffset - 10
+        
+        return header
+    end
+    
+    -- Helper function to create checkbox
+    local function CreateCheckbox(label, settingKey, isCharacterSpecific)
+        local check = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+        check:SetPoint("TOPLEFT", 20, yOffset)
+        check:SetSize(24, 24)
+        
+        local text = check:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        text:SetPoint("LEFT", check, "RIGHT", 5, 0)
+        text:SetText(label)
+        
+        -- Set initial state
+        check:SetChecked(GetSetting(settingKey) ~= false)
+        
+        check:SetScript("OnClick", function(self)
+            local checked = self:GetChecked()
+            SetSetting(settingKey, checked, isCharacterSpecific)
+            PlaySound("igMainMenuOptionCheckBoxOn")
+        end)
+        
+        yOffset = yOffset - itemSpacing
+        return check
+    end
+    
+    -- Helper function to create dropdown
+    local function CreateSettingsDropdown(label, options, settingKey, isCharacterSpecific, onChangeCallback)
+        local labelText = content:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        labelText:SetPoint("TOPLEFT", 20, yOffset)
+        labelText:SetText(label)
+        yOffset = yOffset - 20
+        
+        local dropdown = CreateFrame("Frame", "$parentDropdown" .. settingKey, content, "UIDropDownMenuTemplate")
+        dropdown:SetPoint("TOPLEFT", 10, yOffset)
+        UIDropDownMenu_SetWidth(dropdown, 200)
+        
+        local currentValue = GetSetting(settingKey)
+        
+        -- Find current label
+        local currentLabel = options[1].label
+        for _, opt in ipairs(options) do
+            if opt.value == currentValue then
+                currentLabel = opt.label
+                break
+            end
+        end
+        UIDropDownMenu_SetText(dropdown, currentLabel)
+        
+        UIDropDownMenu_Initialize(dropdown, function(self, level)
+            for _, opt in ipairs(options) do
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = opt.label
+                info.value = opt.value
+                info.checked = (currentValue == opt.value)
+                info.func = function()
+                    SetSetting(settingKey, opt.value, isCharacterSpecific)
+                    UIDropDownMenu_SetText(dropdown, opt.label)
+                    PlaySound("igMainMenuOptionCheckBoxOn")
+                    if onChangeCallback then
+                        onChangeCallback(opt.value)
+                    end
+                end
+                UIDropDownMenu_AddButton(info, level)
+            end
+        end)
+        
+        yOffset = yOffset - 35
+        return dropdown
+    end
+    
+    -- ========================================
+    -- SECTION: Display Settings
+    -- ========================================
+    CreateSectionHeader(L["SETTINGS_DISPLAY"] or "Display Settings")
+    yOffset = yOffset - 5
+    
+    -- Background dropdown (character-specific) with localized options
+    local backgroundOptions = {
+        { value = nil, label = L["SETTING_BG_AUTO"] or "Auto (Class)" },
+        { value = "WARRIOR", label = L["CLASS_WARRIOR"] or "Warrior" },
+        { value = "PALADIN", label = L["CLASS_PALADIN"] or "Paladin" },
+        { value = "HUNTER", label = L["CLASS_HUNTER"] or "Hunter" },
+        { value = "ROGUE", label = L["CLASS_ROGUE"] or "Rogue" },
+        { value = "PRIEST", label = L["CLASS_PRIEST"] or "Priest" },
+        { value = "DEATHKNIGHT", label = L["CLASS_DEATHKNIGHT"] or "Death Knight" },
+        { value = "SHAMAN", label = L["CLASS_SHAMAN"] or "Shaman" },
+        { value = "MAGE", label = L["CLASS_MAGE"] or "Mage" },
+        { value = "WARLOCK", label = L["CLASS_WARLOCK"] or "Warlock" },
+        { value = "DRUID", label = L["CLASS_DRUID"] or "Druid" },
+    }
+    CreateSettingsDropdown(
+        L["SETTING_BACKGROUND"] or "Dressing Room Background:",
+        backgroundOptions,
+        "backgroundOverride",
+        true,  -- Character-specific
+        function(value)
+            -- Update dressing room background immediately
+            if mainFrame and mainFrame.dressingRoom then
+                mainFrame.dressingRoom:UpdateBackgroundTexture(value)
+            end
+        end
+    )
+    
+    yOffset = yOffset - 10
+    
+    -- Preview mode dropdown (character-specific)
+    local previewModeOptions = {
+        { value = "classic", label = L["SETTING_PREVIEW_CLASSIC"] or "Classic (WoW 3.3.5)" },
+        { value = "hd", label = L["SETTING_PREVIEW_HD"] or "HD (Higher Detail)" },
+    }
+    CreateSettingsDropdown(
+        L["SETTING_PREVIEW_MODE"] or "Grid Preview Mode:",
+        previewModeOptions,
+        "previewMode",
+        true,  -- Character-specific
+        function(value)
+            previewSetupVersion = value
+            -- Refresh grid if visible
+            if mainFrame and mainFrame.previewGrid and mainFrame.previewGrid:IsVisible() then
+                UpdatePreviewGrid()
+            end
+        end
+    )
+    
+    -- ========================================
+    -- SECTION: Tooltip Settings
+    -- ========================================
+    yOffset = yOffset - sectionSpacing
+    CreateSectionHeader(L["SETTINGS_TOOLTIP_SECTION"] or "Tooltip Settings")
+    yOffset = yOffset - 5
+    
+    CreateCheckbox(L["SETTING_SHOW_ITEM_ID"] or "Show Item ID in tooltip", "showItemIdTooltip", false)
+    CreateCheckbox(L["SETTING_SHOW_DISPLAY_ID"] or "Show Display ID in tooltip", "showDisplayIdTooltip", false)
+    CreateCheckbox(L["SETTING_SHOW_COLLECTED"] or 'Show "Appearance Collected" in tooltip', "showCollectedTooltip", false)
+    CreateCheckbox(L["SETTING_SHOW_NEW"] or 'Show "New Appearance" in tooltip', "showNewAppearanceTooltip", false)
+    
+    -- ========================================
+    -- SECTION: Info
+    -- ========================================
+    yOffset = yOffset - sectionSpacing
+    CreateSectionHeader(L["SETTINGS_INFO"] or "Information")
+    yOffset = yOffset - 5
+    
+    local infoText = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    infoText:SetPoint("TOPLEFT", 20, yOffset)
+    infoText:SetWidth(520)
+    infoText:SetJustifyH("LEFT")
+    infoText:SetText(
+        L["SETTINGS_INFO_TEXT"] or 
+        "|cff888888Account-wide settings|r apply to all characters.\n" ..
+        "|cff888888Character-specific settings|r (background, preview mode) are saved per character.\n\n" ..
+        "Settings are saved automatically when changed."
+    )
+    
+    -- Update content height based on items added
+    content:SetHeight(math.abs(yOffset) + 50)
+    
+    return frame
+end
+
+-- ============================================================================
 -- Main Frame
 -- ============================================================================
 
@@ -3543,10 +3866,13 @@ local function CreateMainFrame()
             modeToggleButton.Icon:SetTexture("Interface\\Icons\\INV_Fabric_Silk_02")
             modeToggleButton.ModeText:SetText(L["MODE_ITEM"] or "Items")
             modeToggleButton.ModeText:SetTextColor(1, 1, 1)
-            if subclassDropdown then subclassDropdown:Show() end
-            if qualityDropdown then qualityDropdown:Show() end
-            if collectionFilterDropdown then collectionFilterDropdown:Show() end  -- NEW
-            if frame.searchBar then frame.searchBar:Show() end
+            -- Only show dropdowns/searchbar if settings is not visible
+            if not isSettingsVisible then
+                if subclassDropdown then subclassDropdown:Show() end
+                if qualityDropdown then qualityDropdown:Show() end
+                if collectionFilterDropdown then collectionFilterDropdown:Show() end
+                if frame.searchBar then frame.searchBar:Show() end
+            end
             for slotName, btn in pairs(slotButtons) do
                 btn:SetAlpha(1.0)
                 btn:Enable()
@@ -3557,7 +3883,7 @@ local function CreateMainFrame()
             modeToggleButton.ModeText:SetTextColor(0.5, 0.8, 1)
             if subclassDropdown then subclassDropdown:Hide() end
             if qualityDropdown then qualityDropdown:Hide() end
-            if collectionFilterDropdown then collectionFilterDropdown:Hide() end  -- NEW
+            if collectionFilterDropdown then collectionFilterDropdown:Hide() end
             if frame.searchBar then frame.searchBar:Hide() end
             for slotName, btn in pairs(slotButtons) do
                 if ENCHANT_ELIGIBLE_SLOTS[slotName] then
@@ -3630,6 +3956,11 @@ local function CreateMainFrame()
     local previewGrid = CreatePreviewGrid(frame)
     previewGrid:SetPoint("TOPLEFT", 355, -55)
     frame.previewGrid = previewGrid
+    
+    -- Create settings panel (same position as grid, hidden by default)
+    settingsPanel = CreateSettingsPanel(frame)
+    settingsPanel:SetPoint("TOPLEFT", 355, -55)
+    frame.settingsPanel = settingsPanel
     
     local resetBtn = CreateFrame("Button", "$parentReset", frame, "UIPanelButtonTemplate")
     resetBtn:SetSize(65, 22)
@@ -3717,6 +4048,73 @@ local function CreateMainFrame()
     pageText:SetText(L["PAGE"] and string.format(L["PAGE"], 1, 1))
     frame.pageText = pageText
     frame.pageContainer = pageContainer
+    
+    -- ========================================
+    -- Settings Button (top right corner of grid area)
+    -- ========================================
+    local settingsBtn = CreateFrame("Button", "TransmogSettingsButton", frame, "UIPanelButtonTemplate")
+    settingsBtn:SetSize(80, 22)
+    settingsBtn:SetPoint("TOPRIGHT", previewGrid, "TOPRIGHT", 0, 25)
+    settingsBtn:SetText(L["SETTINGS"] or "Settings")
+    
+    -- Toggle function for settings
+    local function ToggleSettings()
+        isSettingsVisible = not isSettingsVisible
+        
+        if isSettingsVisible then
+            -- Show settings, hide grid-related elements
+            previewGrid:Hide()
+            settingsPanel:Show()
+            searchBar:Hide()
+            pageContainer:Hide()
+            
+            -- Hide dropdowns
+            if subclassDropdown then subclassDropdown:Hide() end
+            if qualityDropdown then qualityDropdown:Hide() end
+            if collectionFilterDropdown then collectionFilterDropdown:Hide() end
+            
+            -- Update button text
+            settingsBtn:SetText(L["BACK"] or "Back")
+        else
+            -- Show grid, hide settings
+            settingsPanel:Hide()
+            previewGrid:Show()
+            searchBar:Show()
+            pageContainer:Show()
+            
+            -- Show dropdowns (only in item mode)
+            if currentTransmogMode == TRANSMOG_MODE_ITEM then
+                if subclassDropdown then subclassDropdown:Show() end
+                if qualityDropdown then qualityDropdown:Show() end
+                if collectionFilterDropdown then collectionFilterDropdown:Show() end
+            end
+            
+            -- Update button text
+            settingsBtn:SetText(L["SETTINGS"] or "Settings")
+            
+            -- Refresh grid in case settings changed
+            UpdatePreviewGrid()
+        end
+        
+        PlaySound("igMainMenuOptionCheckBoxOn")
+    end
+    
+    settingsBtn:SetScript("OnClick", ToggleSettings)
+    settingsBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        if isSettingsVisible then
+            GameTooltip:SetText(L["BACK_TOOLTIP"] or "Back to Items")
+            GameTooltip:AddLine(L["BACK_DESC"] or "Click to return to item grid", 1, 1, 1)
+        else
+            GameTooltip:SetText(L["SETTINGS_TOOLTIP"] or "Settings")
+            GameTooltip:AddLine(L["SETTINGS_DESC"] or "Click to open settings", 1, 1, 1)
+        end
+        GameTooltip:Show()
+    end)
+    settingsBtn:SetScript("OnLeave", GameTooltip_Hide)
+    
+    frame.settingsBtn = settingsBtn
+    frame.ToggleSettings = ToggleSettings
     
     tinsert(UISpecialFrames, frame:GetName())
     
@@ -3834,6 +4232,10 @@ initFrame:SetScript("OnEvent", function(self, event)
     end
     
     if event == "PLAYER_ENTERING_WORLD" then
+        -- Initialize settings system
+        InitializeSettings()
+        UpdatePreviewMode()
+        
         -- Load cache from SavedVariables first
         LoadCacheFromSavedVariables()
         
