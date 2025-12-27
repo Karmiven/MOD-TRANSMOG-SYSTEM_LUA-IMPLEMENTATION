@@ -3,6 +3,7 @@
 ## Author: Thiesant
 ## Version: 0.4
 ## SavedVariables: TransmogDB
+## SavedVariablesPerCharacter: TransmogSettings
 
 # Localization
 Locale\enUS.lua
