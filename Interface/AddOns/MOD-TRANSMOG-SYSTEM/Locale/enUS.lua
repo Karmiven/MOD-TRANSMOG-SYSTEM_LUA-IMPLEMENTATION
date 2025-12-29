@@ -105,6 +105,14 @@ L["HELP_3"] = "  /transmog help - Show this help"
 L["APPEARANCE_NOT_COLLECTED"] = "You don't have this appearance"
 L["ERROR_INVALID_SLOT_OR_ITEM"] = "Invalid slot or item"
 L["ERROR_INVALID_SLOT"] = "Invalid equipment slot"
+L["INVALID_SLOT"] = "Invalid slot"
+L["INVALID_SLOT_OR_ITEM"] = "Invalid slot or item"
+L["INVALID_SLOT_OR_ENCHANT"] = "Invalid slot or enchant"
+L["SLOT_NOT_ENCHANT_ELIGIBLE"] = "This slot cannot have enchant transmog"
+L["INVALID_ENCHANT_ID"] = "Invalid enchant ID"
+L["ENCHANT_CACHE_NOT_READY"] = "Enchant cache not ready, please wait"
+L["NOT_IN_COLLECTION"] = "Appearance not in collection"
+L["ITEM_NOT_ELIGIBLE"] = "Item not eligible for transmog"
 
 -- Filters
 L["SELECT_ITEM_CLICK"] = "Click to select this item"
@@ -133,6 +141,18 @@ L["SET_SAVE_TOOLTIP"] = "Save selected items as a new set"
 L["SET_DELETE_TOOLTIP"] = "Delete the selected set"
 L["SET_APPLY_TOOLTIP"] = "Apply this set as active transmog\n(Only collected appearances will be applied)"
 L["APPLY_HINT"] = "Select an appearance and Shift+Click to apply"
+L["APPLY_ALL_TOOLTIP"] = "Apply All Selected"
+L["APPLY_ALL_DESC"] = "Applies all items shown with cyan border to your character"
+L["APPLY_ALL_SUCCESS"] = "|cff00ff00[Transmog]|r Applied %d appearances"
+L["APPLY_ALL_NONE"] = "|cffff0000[Transmog]|r No appearances selected to apply"
+L["APPLY_SINGLE_HINT"] = "|cff00ff00Shift+Click|r on a grid item to apply only that appearance"
+
+-- Reset Button
+L["RESET_TOOLTIP"] = "Reset Preview"
+L["RESET_DESC"] = "Resets the dressing room to your current appearance"
+L["RESET_RIGHTCLICK_HINT"] = "|cffff0000Right-Click|r to clear ALL active transmogs"
+L["CLEAR_ALL_SUCCESS"] = "|cff00ff00[Transmog]|r Cleared %d transmog slots"
+L["CLEAR_ALL_NONE"] = "|cff00ff00[Transmog]|r No active transmogs to clear"
 
 -- Mode Toggle
 L["MODE_ITEM"] = "Items"

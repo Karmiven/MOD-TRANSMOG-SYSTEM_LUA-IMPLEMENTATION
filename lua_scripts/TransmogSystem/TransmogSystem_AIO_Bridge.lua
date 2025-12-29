@@ -94,6 +94,13 @@ local ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL = true
 local ALLOW_UNCOLLECTED_TRANSMOG = false
 
 
+-- ───────────────────────────────── MIRROR IMAGE ─────────────────────────────────
+
+-- MIRROR_IMAGE_TRANSMOG_ENABLED
+-- Shows player's transmog appearance on Mirror Image clones (Mage spell)
+local MIRROR_IMAGE_TRANSMOG_ENABLED = true
+
+
 -- ───────────────────────────────── ITEM QUALITY ─────────────────────────────────
 
 -- Allowed item qualities for transmog (by quality ID)
@@ -131,6 +138,10 @@ end
 -- ENABLE_DEBUG_MESSAGES
 -- Set to false to disable debug messages in the server console
 local ENABLE_DEBUG_MESSAGES = false
+
+-- MIRROR_IMAGE_DEBUG
+-- Enable debug prints for Mirror Image transmog (useful for troubleshooting)
+local MIRROR_IMAGE_DEBUG = false
 
 
 -- ──────────────────────────────── CACHE VERSION# ────────────────────────────────
@@ -180,6 +191,7 @@ if ENABLE_AIO_BRIDGE then
         version = 0,              -- Cache version (uses CACHE_VERSION setting)
         isReady = false,          -- Flag indicating cache is built
         bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality, displayId}, ... }
+        byItemId = {},            -- Items indexed by itemId: byItemId[itemId] = {class, subclass, quality, displayId}
         enchants = {},            -- All enchant visuals
     }
 
@@ -247,7 +259,7 @@ if ENABLE_AIO_BRIDGE then
             return 4, ARMOR_SUBCLASS[subclassName]  -- class 4 = Armor
         elseif WEAPON_SUBCLASS[subclassName] then
             return 2, WEAPON_SUBCLASS[subclassName] -- class 2 = Weapon
-    	end
+        end
         -- For other classes (like Miscellaneous), we determine by inventory type
         return nil, nil
     end
@@ -311,6 +323,7 @@ if ENABLE_AIO_BRIDGE then
         -- Use configurable cache version (only changes when admin updates CACHE_VERSION setting)
         SERVER_ITEM_CACHE.version = CACHE_VERSION
         SERVER_ITEM_CACHE.bySlot = {}
+        SERVER_ITEM_CACHE.byItemId = {}
         
         -- Initialize all slot tables
         for slotId, _ in pairs(SLOT_INV_TYPES) do
@@ -357,6 +370,16 @@ if ENABLE_AIO_BRIDGE then
                             quality,
                             displayId
                         })
+                        
+                        -- Also store by itemId for fast lookup
+                        SERVER_ITEM_CACHE.byItemId[itemId] = {
+                            class = itemClass,
+                            subclass = itemSubclass,
+                            quality = quality,
+                            displayid = displayId,
+                            inventoryType = invType
+                        }
+                        
                         count = count + 1
                     end
                 until not Q:NextRow()
@@ -400,59 +423,19 @@ if ENABLE_AIO_BRIDGE then
         )
     end
        
-    -- Helper function to get item template from world database
-    local itemTemplateCache = {}
-    
+    -- Helper function to get item template from cache (no DB query)
     local function GetItemTemplate(itemId)
-        if itemTemplateCache[itemId] then
-            return itemTemplateCache[itemId]
+        if SERVER_ITEM_CACHE.isReady and SERVER_ITEM_CACHE.byItemId[itemId] then
+            return SERVER_ITEM_CACHE.byItemId[itemId]
         end
-        
-        local query = WorldDBQuery(string.format(
-            "SELECT class, subclass, displayid, InventoryType, Quality FROM item_template WHERE entry = %d",
-            itemId
-        ))
-        
-        if not query then
-            return nil
-        end
-        
-        local template = {
-            class = query:GetUInt8(0),
-            subclass = query:GetUInt8(1),
-            displayid = query:GetUInt32(2),
-            inventoryType = query:GetUInt8(3),
-            quality = query:GetUInt8(4),  -- Add this line
-        }
-        
-        itemTemplateCache[itemId] = template
-        return template
+        return nil
     end
     
     -- ============================================================================
-    -- Database Queries
+    -- Database Queries (Async Only)
     -- ============================================================================
     
-    local function GetPlayerCollection(accountId)
-        local query = CharDBQuery(string.format(
-            "SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d",
-            accountId
-        ))
-        
-        local items = {}
-        if query then
-            repeat
-                local itemId = query:GetUInt32(0)
-                -- Skip blacklisted items
-                if not IsItemBlacklisted(itemId) then
-                    table.insert(items, itemId)
-                end
-            until not query:NextRow()
-        end
-        return items
-    end
-    
-    -- Async version of GetPlayerCollection
+    -- Get player collection async
     local function GetPlayerCollectionAsync(accountId, callback)
         CharDBQueryAsync(
             string.format("SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d", accountId),
@@ -471,15 +454,7 @@ if ENABLE_AIO_BRIDGE then
         )
     end
     
-    local function HasAppearance(accountId, itemId)
-        local query = CharDBQuery(string.format(
-            "SELECT 1 FROM mod_transmog_system_collection WHERE account_id = %d AND item_id = %d",
-            accountId, itemId
-        ))
-        return query ~= nil
-    end
-    
-    -- Async version of HasAppearance
+    -- Check if player has appearance async
     local function HasAppearanceAsync(accountId, itemId, callback)
         CharDBQueryAsync(
             string.format("SELECT 1 FROM mod_transmog_system_collection WHERE account_id = %d AND item_id = %d", accountId, itemId),
@@ -489,302 +464,56 @@ if ENABLE_AIO_BRIDGE then
         )
     end
 
-    local function GetCollectionForSlotFiltered(accountId, slotId, subclassName, quality)
-        local invTypes = SLOT_INV_TYPES[slotId]
-        if not invTypes then return {} end
-        
-        local invTypeStr = table.concat(invTypes, ",")
-        
-        -- First get all items for this account
-        local collectionQuery = CharDBQuery(string.format(
-            "SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d",
-            accountId
-        ))
-        
-        if not collectionQuery then return {} end
-        
-        -- Build list of item IDs
-        local itemIds = {}
-        repeat
-            table.insert(itemIds, collectionQuery:GetUInt32(0))
-        until not collectionQuery:NextRow()
-        
-        if #itemIds == 0 then return {} end
-        
-        -- Now filter by item_template using WorldDBQuery
-        local itemIdStr = table.concat(itemIds, ",")
-        
-        local query
-        -- Build WHERE clause dynamically
-        local whereConditions = {}
-        table.insert(whereConditions, string.format("entry IN (%s)", itemIdStr))
-        table.insert(whereConditions, string.format("InventoryType IN (%s)", invTypeStr))
-        
-        -- "All" or nil/empty means no subclass filter
-        if subclassName and subclassName ~= "" and subclassName ~= "All" then
-            local itemClass, itemSubclass = GetSubclassId(subclassName)
-            if itemClass and itemSubclass then
-                table.insert(whereConditions, string.format("class = %d", itemClass))
-                table.insert(whereConditions, string.format("subclass = %d", itemSubclass))
-            end
+    -- NOTE: Sync versions removed - use async only
+    
+    -- ============================================================================
+    -- Session Cache for Active Transmogs
+    -- Loaded async on login, updated on apply/remove to avoid sync DB queries
+    -- ============================================================================
+    
+    local PlayerActiveTransmogCache = {}  -- [guid] = { transmogs = {slot=itemId}, enchants = {slot=enchantId} }
+    
+    local function GetCachedActiveTransmogs(guid)
+        if PlayerActiveTransmogCache[guid] then
+            return PlayerActiveTransmogCache[guid].transmogs or {}
         end
-        
-        -- Quality filter
-        if quality and quality ~= "" and quality ~= "All" then
-            -- Map quality string to quality ID
-            local qualityMap = {
-                ["Poor"] = 0,
-                ["Common"] = 1,
-                ["Uncommon"] = 2,
-                ["Rare"] = 3,
-                ["Epic"] = 4,
-                ["Legendary"] = 5,
-                ["Heirloom"] = 6,
-            }
-            local qualityId = qualityMap[quality]
-            if qualityId then
-                table.insert(whereConditions, string.format("Quality = %d", qualityId))
-            end
-        end
-        
-        local whereClause = table.concat(whereConditions, " AND ")
-        query = WorldDBQuery(string.format(
-            "SELECT entry FROM item_template WHERE %s",
-            whereClause
-        ))
-        
-        local items = {}
-        if query then
-            repeat
-                local itemId = query:GetUInt32(0)
-                -- Skip blacklisted items
-                if not IsItemBlacklisted(itemId) then
-                    table.insert(items, itemId)
-                end
-            until not query:NextRow()
-        end
-        
-        return items
-    end
-
-    -- NEW: Get ALL items for slot (both collected and uncollected) with collected status
-    -- Returns array of {itemId, collected} sorted by collected first
-    -- FIXED: Queries collected items first (all of them), then adds uncollected items
-    local function GetAllItemsForSlotFiltered(accountId, slotId, subclassName, quality)
-        local invTypes = SLOT_INV_TYPES[slotId]
-        if not invTypes then return {} end
-        
-        local invTypeStr = table.concat(invTypes, ",")
-        
-        -- Build base WHERE conditions for item_template
-        local baseConditions = {}
-        table.insert(baseConditions, string.format("InventoryType IN (%s)", invTypeStr))
-        table.insert(baseConditions, "displayid > 0")  -- Must have a visual
-        
-        -- Subclass filter
-        if subclassName and subclassName ~= "" and subclassName ~= "All" then
-            local itemClass, itemSubclass = GetSubclassId(subclassName)
-            if itemClass and itemSubclass then
-                table.insert(baseConditions, string.format("class = %d", itemClass))
-                table.insert(baseConditions, string.format("subclass = %d", itemSubclass))
-            end
-        end
-        
-        -- Quality filter
-        if quality and quality ~= "" and quality ~= "All" then
-            local qualityMap = {
-                ["Poor"] = 0,
-                ["Common"] = 1,
-                ["Uncommon"] = 2,
-                ["Rare"] = 3,
-                ["Epic"] = 4,
-                ["Legendary"] = 5,
-                ["Heirloom"] = 6,
-            }
-            local qualityId = qualityMap[quality]
-            if qualityId then
-                table.insert(baseConditions, string.format("Quality = %d", qualityId))
-            end
-        end
-        
-        -- Only include allowed qualities
-        local qualityList = {}
-        for q, allowed in pairs(ALLOWED_QUALITIES) do
-            if allowed then
-                table.insert(qualityList, q)
-            end
-        end
-        table.insert(baseConditions, string.format("Quality IN (%s)", table.concat(qualityList, ",")))
-        
-        local baseWhereClause = table.concat(baseConditions, " AND ")
-        
-        -- STEP 1: Get player's collected item IDs from CharDB
-        local collectedIdsList = {}
-        local collectedIdsSet = {}
-        
-        local collectionQuery = CharDBQuery(string.format(
-            "SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d",
-            accountId
-        ))
-        
-        if collectionQuery then
-            repeat
-                local itemId = collectionQuery:GetUInt32(0)
-                table.insert(collectedIdsList, itemId)
-                collectedIdsSet[itemId] = true
-            until not collectionQuery:NextRow()
-        end
-        
-        -- STEP 2: Get collected items that match slot/filters from WorldDB
-        local collectedItems = {}
-        
-        if #collectedIdsList > 0 then
-            local collectedIdsStr = table.concat(collectedIdsList, ",")
-            local collectedQuery = WorldDBQuery(string.format(
-                "SELECT entry FROM item_template WHERE entry IN (%s) AND %s",
-                collectedIdsStr, baseWhereClause
-            ))
-            
-            if collectedQuery then
-                repeat
-                    local itemId = collectedQuery:GetUInt32(0)
-                    table.insert(collectedItems, { itemId = itemId, collected = true })
-                until not collectedQuery:NextRow()
-            end
-        end
-        
-        -- STEP 3: Get uncollected items (no limit)
-        local uncollectedItems = {}
-        
-        local uncollectedQuery = WorldDBQuery(string.format(
-            "SELECT entry FROM item_template WHERE %s ORDER BY entry",
-            baseWhereClause
-        ))
-        
-        if uncollectedQuery then
-            repeat
-                local itemId = uncollectedQuery:GetUInt32(0)
-                -- Only add if NOT in collected set and NOT blacklisted
-                if not collectedIdsSet[itemId] and not IsItemBlacklisted(itemId) then
-                    table.insert(uncollectedItems, { itemId = itemId, collected = false })
-                end
-            until not uncollectedQuery:NextRow()
-        end
-        
-        -- Combine: collected first, then uncollected
-        local result = {}
-        for _, item in ipairs(collectedItems) do
-            -- Filter out blacklisted items from collected as well
-            if not IsItemBlacklisted(item.itemId) then
-                table.insert(result, item)
-            end
-        end
-        for _, item in ipairs(uncollectedItems) do
-            table.insert(result, item)
-        end
-        
-        return result
+        return {}
     end
     
-    -- NEW: Get only UNCOLLECTED items for slot
-    -- Returns array of {itemId, collected=false}
-    local function GetUncollectedItemsForSlotFiltered(accountId, slotId, subclassName, quality)
-        local invTypes = SLOT_INV_TYPES[slotId]
-        if not invTypes then return {} end
-        
-        local invTypeStr = table.concat(invTypes, ",")
-        
-        -- Get player's collection
-        local collectionQuery = CharDBQuery(string.format(
-            "SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d",
-            accountId
-        ))
-        
-        local collectedIds = {}
-        if collectionQuery then
-            repeat
-                collectedIds[collectionQuery:GetUInt32(0)] = true
-            until not collectionQuery:NextRow()
+    local function GetCachedActiveEnchantTransmogs(guid)
+        if PlayerActiveTransmogCache[guid] then
+            return PlayerActiveTransmogCache[guid].enchants or {}
         end
-        
-        -- Build WHERE clause for item_template
-        local whereConditions = {}
-        table.insert(whereConditions, string.format("InventoryType IN (%s)", invTypeStr))
-        table.insert(whereConditions, "displayid > 0")  -- Must have a visual
-        
-        -- Subclass filter
-        if subclassName and subclassName ~= "" and subclassName ~= "All" then
-            local itemClass, itemSubclass = GetSubclassId(subclassName)
-            if itemClass and itemSubclass then
-                table.insert(whereConditions, string.format("class = %d", itemClass))
-                table.insert(whereConditions, string.format("subclass = %d", itemSubclass))
-            end
-        end
-        
-        -- Quality filter
-        if quality and quality ~= "" and quality ~= "All" then
-            local qualityMap = {
-                ["Poor"] = 0,
-                ["Common"] = 1,
-                ["Uncommon"] = 2,
-                ["Rare"] = 3,
-                ["Epic"] = 4,
-                ["Legendary"] = 5,
-                ["Heirloom"] = 6,
-            }
-            local qualityId = qualityMap[quality]
-            if qualityId then
-                table.insert(whereConditions, string.format("Quality = %d", qualityId))
-            end
-        end
-        
-        -- Only include allowed qualities
-        local qualityList = {}
-        for q, allowed in pairs(ALLOWED_QUALITIES) do
-            if allowed then
-                table.insert(qualityList, q)
-            end
-        end
-        table.insert(whereConditions, string.format("Quality IN (%s)", table.concat(qualityList, ",")))
-        
-        local whereClause = table.concat(whereConditions, " AND ")
-        local query = WorldDBQuery(string.format(
-            "SELECT entry FROM item_template WHERE %s ORDER BY entry",
-            whereClause
-        ))
-        
-        local items = {}
-        if query then
-            repeat
-                local itemId = query:GetUInt32(0)
-                -- Only add if NOT in collection and NOT blacklisted
-                if not collectedIds[itemId] and not IsItemBlacklisted(itemId) then
-                    table.insert(items, { itemId = itemId, collected = false })
-                end
-            until not query:NextRow()
-        end
-        
-        return items
-    end
-
-   local function GetActiveTransmogs(guid)
-        local query = CharDBQuery(string.format(
-            "SELECT slot, item_id FROM mod_transmog_system_active WHERE guid = %d",
-            guid
-        ))
-        
-        local transmogs = {}
-        if query then
-            repeat
-                local slot = query:GetUInt8(0)
-                local itemId = query:GetUInt32(1)
-                transmogs[slot] = itemId
-            until not query:NextRow()
-        end
-        return transmogs
+        return {}
     end
     
-    -- Async version of GetActiveTransmogs
+    local function UpdateTransmogCache(guid, slot, itemId)
+        if not PlayerActiveTransmogCache[guid] then
+            PlayerActiveTransmogCache[guid] = { transmogs = {}, enchants = {} }
+        end
+        if itemId and itemId > 0 then
+            PlayerActiveTransmogCache[guid].transmogs[slot] = itemId
+        else
+            PlayerActiveTransmogCache[guid].transmogs[slot] = nil
+        end
+    end
+    
+    local function UpdateEnchantCache(guid, slot, enchantId)
+        if not PlayerActiveTransmogCache[guid] then
+            PlayerActiveTransmogCache[guid] = { transmogs = {}, enchants = {} }
+        end
+        if enchantId and enchantId > 0 then
+            PlayerActiveTransmogCache[guid].enchants[slot] = enchantId
+        else
+            PlayerActiveTransmogCache[guid].enchants[slot] = nil
+        end
+    end
+    
+    local function ClearPlayerCache(guid)
+        PlayerActiveTransmogCache[guid] = nil
+    end
+
+    -- Get active transmogs async (also updates session cache)
     local function GetActiveTransmogsAsync(guid, callback)
         CharDBQueryAsync(
             string.format("SELECT slot, item_id FROM mod_transmog_system_active WHERE guid = %d", guid),
@@ -794,9 +523,16 @@ if ENABLE_AIO_BRIDGE then
                     repeat
                         local slot = Q:GetUInt8(0)
                         local itemId = Q:GetUInt32(1)
-                        transmogs[slot] = itemId
+                        if itemId > 0 then
+                            transmogs[slot] = itemId
+                        end
                     until not Q:NextRow()
                 end
+                -- Update session cache
+                if not PlayerActiveTransmogCache[guid] then
+                    PlayerActiveTransmogCache[guid] = { transmogs = {}, enchants = {} }
+                end
+                PlayerActiveTransmogCache[guid].transmogs = transmogs
                 callback(transmogs)
             end
         )
@@ -807,6 +543,8 @@ if ENABLE_AIO_BRIDGE then
             "REPLACE INTO mod_transmog_system_active (guid, slot, item_id) VALUES (%d, %d, %d)",
             guid, slot, itemId
         ))
+        -- Update cache
+        UpdateTransmogCache(guid, slot, itemId)
     end
     
     local function RemoveActiveTransmog(guid, slot)
@@ -814,6 +552,8 @@ if ENABLE_AIO_BRIDGE then
             "DELETE FROM mod_transmog_system_active WHERE guid = %d AND slot = %d",
             guid, slot
         ))
+        -- Update cache
+        UpdateTransmogCache(guid, slot, nil)
     end
     
     -- ============================================================================
@@ -918,7 +658,7 @@ if ENABLE_AIO_BRIDGE then
     local function IsEnchantEligibleSlot(slot)
         return ENCHANT_ELIGIBLE_SLOTS[slot] == true
     end
-	
+    
     local function ApplyTransmogVisual(player, slot, fakeItemId)
         if not player or not TRANSMOG_SLOTS[slot] then
             DebugPrint("[Transmog Debug] ApplyTransmogVisual failed: invalid player or slot " .. tostring(slot))
@@ -1036,46 +776,44 @@ if ENABLE_AIO_BRIDGE then
         return true
     end
     
-    -- Get active enchant transmogs from database (returns enchant_id, not visual)
-    local function GetActiveEnchantTransmogs(guid)
-        local transmogs = {}
-        local query = CharDBQuery(string.format(
-            "SELECT slot, enchant_id FROM mod_transmog_system_active WHERE guid = %d AND enchant_id > 0",
-            guid
-        ))
-        
-        if query then
-            repeat
-                local slot = query:GetUInt32(0)
-                local enchantId = query:GetUInt32(1)
-                transmogs[slot] = enchantId
-            until not query:NextRow()
-        end
-        
-        return transmogs
+    -- Get active enchant transmogs async (also updates session cache)
+    local function GetActiveEnchantTransmogsAsync(guid, callback)
+        CharDBQueryAsync(
+            string.format("SELECT slot, enchant_id FROM mod_transmog_system_active WHERE guid = %d AND enchant_id > 0", guid),
+            function(Q)
+                local transmogs = {}
+                if Q then
+                    repeat
+                        local slot = Q:GetUInt32(0)
+                        local enchantId = Q:GetUInt32(1)
+                        transmogs[slot] = enchantId
+                    until not Q:NextRow()
+                end
+                -- Update session cache
+                if not PlayerActiveTransmogCache[guid] then
+                    PlayerActiveTransmogCache[guid] = { transmogs = {}, enchants = {} }
+                end
+                PlayerActiveTransmogCache[guid].enchants = transmogs
+                callback(transmogs)
+            end
+        )
     end
     
-    -- Save enchant transmog to database
+    -- Save enchant transmog to database (uses INSERT OR REPLACE pattern)
     local function SaveEnchantTransmog(guid, slot, enchantId)
-        -- Check if there's an existing entry for this slot
-        local existingQuery = CharDBQuery(string.format(
-            "SELECT item_id FROM mod_transmog_system_active WHERE guid = %d AND slot = %d",
-            guid, slot
-        ))
-        
-        if existingQuery then
-            -- Update existing entry
-            CharDBExecute(string.format(
-                "UPDATE mod_transmog_system_active SET enchant_id = %d WHERE guid = %d AND slot = %d",
-                enchantId, guid, slot
-            ))
-        else
-            -- Insert new entry (with item_id = 0 since this is enchant-only)
-            CharDBExecute(string.format(
-                "INSERT INTO mod_transmog_system_active (guid, slot, item_id, enchant_id) VALUES (%d, %d, 0, %d)",
-                guid, slot, enchantId
-            ))
+        -- Use REPLACE with all columns to handle both insert and update
+        local currentItemId = 0
+        local cached = GetCachedActiveTransmogs(guid)
+        if cached[slot] then
+            currentItemId = cached[slot]
         end
+        
+        CharDBExecute(string.format(
+            "REPLACE INTO mod_transmog_system_active (guid, slot, item_id, enchant_id) VALUES (%d, %d, %d, %d)",
+            guid, slot, currentItemId, enchantId
+        ))
+        -- Update cache
+        UpdateEnchantCache(guid, slot, enchantId)
     end
     
     -- Remove enchant transmog from database
@@ -1084,62 +822,34 @@ if ENABLE_AIO_BRIDGE then
             "UPDATE mod_transmog_system_active SET enchant_id = 0 WHERE guid = %d AND slot = %d",
             guid, slot
         ))
+        -- Update cache
+        UpdateEnchantCache(guid, slot, nil)
     end
     
-    -- Get enchant collection from database
-    -- Get all available enchant visuals from reference table
-    -- Returns array of {id, itemVisual, name, icon}
-    local function GetAllEnchantVisuals()
-        local enchants = {}
-        local query = CharDBQuery(
-            "SELECT id, item_visual, name_enUS, icon FROM mod_transmog_system_enchantment ORDER BY id"
-        )
-        
-        if query then
-            repeat
-                table.insert(enchants, {
-                    id = query:GetUInt32(0),
-                    itemVisual = query:GetUInt32(1),
-                    name = query:GetString(2),
-                    icon = query:GetString(3)
-                })
-            until not query:NextRow()
-        end
-        
-        return enchants
-    end
-    
-    -- Get enchant info by ID
-    local function GetEnchantById(enchantId)
-        local query = CharDBQuery(string.format(
-            "SELECT id, item_visual, name_enUS, icon FROM mod_transmog_system_enchantment WHERE id = %d",
-            enchantId
-        ))
-        
-        if query then
-            return {
-                id = query:GetUInt32(0),
-                itemVisual = query:GetUInt32(1),
-                name = query:GetString(2),
-                icon = query:GetString(3)
-            }
+    -- Get enchant info from SERVER_ITEM_CACHE (no DB query needed)
+    local function GetEnchantFromCache(enchantId)
+        if SERVER_ITEM_CACHE.isReady and SERVER_ITEM_CACHE.enchants then
+            for _, enchant in ipairs(SERVER_ITEM_CACHE.enchants) do
+                if enchant.id == enchantId then
+                    return enchant
+                end
+            end
         end
         return nil
     end
     
-    -- Apply all enchant transmogs for a player on login
-    local function ApplyAllEnchantTransmogs(player)
+    -- Apply all enchant transmogs for a player (uses session cache)
+    local function ApplyAllEnchantTransmogsFromCache(player)
         if not player then return end
         
         local guid = player:GetGUIDLow()
-        local enchantTransmogs = GetActiveEnchantTransmogs(guid)
+        local enchantTransmogs = GetCachedActiveEnchantTransmogs(guid)
         
         local appliedCount = 0
         for slot, enchantId in pairs(enchantTransmogs) do
             if IsEnchantEligibleSlot(slot) then
                 local equippedItem = player:GetItemByPos(255, slot)
                 if equippedItem then
-                    -- Use enchant ID directly instead of itemVisual
                     if ApplyEnchantVisual(player, slot, enchantId) then
                         appliedCount = appliedCount + 1
                     end
@@ -1152,26 +862,25 @@ if ENABLE_AIO_BRIDGE then
         end
     end
     
-    local function ApplyAllTransmogs(player)
+    -- Apply all transmogs for a player (uses session cache)
+    local function ApplyAllTransmogsFromCache(player)
         if not player then return end
         
         local guid = player:GetGUIDLow()
-        local transmogs = GetActiveTransmogs(guid)
+        local transmogs = GetCachedActiveTransmogs(guid)
         
         local appliedCount = 0
         for slot, itemId in pairs(transmogs) do
-            -- Only apply if player has an item equipped in that slot
             local equippedItem = player:GetItemByPos(255, slot)
             if equippedItem then
-			    if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
+                if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
                     if ApplyTransmogVisual(player, slot, itemId) then
                         appliedCount = appliedCount + 1
                     end
-				end
+                end
             end
         end
         
-        -- Single update after applying all transmogs
         if appliedCount > 0 then
             DebugPrint(string.format("[Transmog] Applied %d transmogs for %s", appliedCount, player:GetName()))
         end
@@ -1191,6 +900,9 @@ if ENABLE_AIO_BRIDGE then
     -- Player's notifications cache to avoid multiple notification on same Item from different event triggered
     local SessionNotifiedItems = {}
     
+    -- Track which players have had their collection loaded (to prevent premature notifications)
+    local SessionCollectionLoaded = {}
+    
     local function GetSessionCache(player)
         local guid = player:GetGUIDLow()
         if not SessionNotifiedItems[guid] then
@@ -1199,30 +911,31 @@ if ENABLE_AIO_BRIDGE then
         return SessionNotifiedItems[guid]
     end
     
+    local function IsCollectionLoaded(player)
+        local guid = player:GetGUIDLow()
+        return SessionCollectionLoaded[guid] == true
+    end
+    
+    local function SetCollectionLoaded(player)
+        local guid = player:GetGUIDLow()
+        SessionCollectionLoaded[guid] = true
+    end
+    
+    -- Check if item can be transmogged using SERVER_ITEM_CACHE
     local function CanTransmogItem(itemId)
-        local template = GetItemTemplate(itemId)
-        if not template then return false end
-        
-        -- Must have a display ID
-        if template.displayid == 0 then
+        -- Use cached item data if available
+        if SERVER_ITEM_CACHE.isReady then
+            for slotId, items in pairs(SERVER_ITEM_CACHE.bySlot) do
+                for _, itemData in ipairs(items) do
+                    if itemData[1] == itemId then  -- itemData[1] is itemId
+                        return true  -- Item is in cache, so it's transmog-eligible
+                    end
+                end
+            end
             return false
         end
         
-        -- Check if quality is allowed
-        if not ALLOWED_QUALITIES[template.quality] then
-            return false
-        end
-        
-        local itemClass = template.class
-        local invType = template.inventoryType
-        
-        -- Check if inventory type maps to a valid slot
-        local slot = INV_TYPE_TO_SLOT[invType]
-        if not slot then
-            return false
-        end
-        
-        return true
+        return false
     end
     
     local function AddToCollection(player, itemId, notifyPlayer)
@@ -1237,26 +950,28 @@ if ENABLE_AIO_BRIDGE then
             return false
         end
         
-        local accountId = player:GetAccountId()
-        
-        -- Check if already in collection
-        if HasAppearance(accountId, itemId) then
-            return false
+        -- Check session cache first - already processed this session
+        local cache = GetSessionCache(player)
+        if cache[itemId] then
+            return true  -- Already processed, skip DB write and notification
         end
         
-        -- Add to database (simplified - display_ID are queried from acore_world.item_template)
+        -- Mark as processed in session cache
+        cache[itemId] = true
+        
+        local accountId = player:GetAccountId()
+        
+        -- Add to database using INSERT IGNORE (handles duplicates)
         CharDBExecute(string.format(
             "INSERT IGNORE INTO mod_transmog_system_collection (account_id, item_id) VALUES (%d, %d)",
             accountId, itemId
         ))
         
-        -- Notify player if requested and if not in cache
-        if notifyPlayer ~= false then
-    	    local cache = GetSessionCache(player)
-    		if not cache[itemId] then
-    		    cache[itemId] = true
-                NotifyNewAppearance(player, itemId)
-    		end
+        -- Only notify if:
+        -- 1. notifyPlayer is true
+        -- 2. Collection has been loaded (prevents notifications before we know what's already collected)
+        if notifyPlayer ~= false and IsCollectionLoaded(player) then
+            NotifyNewAppearance(player, itemId)
         end
         
         return true
@@ -1290,16 +1005,8 @@ if ENABLE_AIO_BRIDGE then
     local TRANSMOG_HANDLER = AIO.AddHandlers("TRANSMOG", {})
     
     -- ============================================================================
-    -- NEW: Cache-based handlers for improved performance
+    -- Cache-based handlers
     -- ============================================================================
-    
-    -- Request server cache version (client checks if it needs to download cache)
-    TRANSMOG_HANDLER.GetCacheVersion = function(player)
-        AIO.Msg():Add("TRANSMOG", "CacheVersion", {
-            version = SERVER_ITEM_CACHE.version,
-            isReady = SERVER_ITEM_CACHE.isReady
-        }):Send(player)
-    end
     
     -- Request FULL item cache (ALL slots at once)
     -- This is called once on login - client stores in SavedVariables
@@ -1360,50 +1067,6 @@ if ENABLE_AIO_BRIDGE then
         
         DebugPrint(string.format("[Transmog] Sent %d items in %d chunks to %s", 
             #allItems, totalChunks, player:GetName()))
-    end
-    
-    -- Request full item cache for a specific slot (only sent if client cache is outdated)
-    -- clientVersion: the version the client currently has (0 if none)
-    TRANSMOG_HANDLER.RequestSlotCache = function(player, slotId, clientVersion)
-        if not SERVER_ITEM_CACHE.isReady then
-            AIO.Msg():Add("TRANSMOG", "SlotCacheNotReady", { slotId = slotId }):Send(player)
-            return
-        end
-        
-        -- Check if client already has current version
-        if clientVersion and clientVersion == SERVER_ITEM_CACHE.version then
-            AIO.Msg():Add("TRANSMOG", "SlotCacheUpToDate", { 
-                slotId = slotId, 
-                version = SERVER_ITEM_CACHE.version 
-            }):Send(player)
-            return
-        end
-        
-        local items = SERVER_ITEM_CACHE.bySlot[slotId] or {}
-        
-        -- Send in chunks of 100 (each item is compact: {itemId, class, subclass, quality, displayId})
-        local chunkSize = 100
-        local totalChunks = math.ceil(#items / chunkSize)
-        if totalChunks == 0 then totalChunks = 1 end
-        
-        for chunk = 1, totalChunks do
-            local startIdx = (chunk - 1) * chunkSize + 1
-            local endIdx = math.min(chunk * chunkSize, #items)
-            local chunkItems = {}
-            
-            for i = startIdx, endIdx do
-                -- Items stored as {itemId, class, subclass, quality, displayId}
-                table.insert(chunkItems, items[i])
-            end
-            
-            AIO.Msg():Add("TRANSMOG", "SlotCacheData", {
-                slotId = slotId,
-                version = SERVER_ITEM_CACHE.version,
-                chunk = chunk,
-                totalChunks = totalChunks,
-                items = chunkItems
-            }):Send(player)
-        end
     end
     
     -- Request full enchant cache (only sent if client cache is outdated)
@@ -1491,221 +1154,38 @@ if ENABLE_AIO_BRIDGE then
     end
     
     -- ============================================================================
-    -- Legacy Handlers (kept for backwards compatibility)
+    -- Client Request Handlers
     -- ============================================================================
     
-    -- Request full collection
+    -- Request full collection (async version)
     TRANSMOG_HANDLER.RequestCollection = function(player)
         local accountId = player:GetAccountId()
-        local collection = GetPlayerCollection(accountId)
+        local playerName = player:GetName()  -- Store name for callback
         
-        -- Send in chunks of 100
-        local chunkSize = 100
-        local totalChunks = math.ceil(#collection / chunkSize)
-        if totalChunks == 0 then totalChunks = 1 end
-        
-        for chunk = 1, totalChunks do
-            local startIdx = (chunk - 1) * chunkSize + 1
-            local endIdx = math.min(chunk * chunkSize, #collection)
-            local items = {}
+        GetPlayerCollectionAsync(accountId, function(collection)
+            -- Send in chunks of 100
+            local chunkSize = 100
+            local totalChunks = math.ceil(#collection / chunkSize)
+            if totalChunks == 0 then totalChunks = 1 end
             
-            for i = startIdx, endIdx do
-                table.insert(items, collection[i])
+            for chunk = 1, totalChunks do
+                local startIdx = (chunk - 1) * chunkSize + 1
+                local endIdx = math.min(chunk * chunkSize, #collection)
+                local items = {}
+                
+                for i = startIdx, endIdx do
+                    table.insert(items, collection[i])
+                end
+                
+                SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "CollectionData", {
+                    chunk = chunk,
+                    totalChunks = totalChunks,
+                    items = items
+                }))
             end
-            
-            AIO.Msg():Add("TRANSMOG", "CollectionData", {
-                chunk = chunk,
-                totalChunks = totalChunks,
-                items = items
-            }):Send(player)
-        end
+        end)
     end
 
-    -- Search items - searches ALL items and includes collected status
-    TRANSMOG_HANDLER.SearchItems = function(player, slotId, searchType, searchText, locale)
-        if not searchType or not searchText then
-            DebugPrint("[Transmog Debug] SearchItems received invalid parameters")
-            return
-        end
-        
-        -- Validate locale, else fallback to enUS
-        local validLocales = {
-            "enUS", "enGB", "koKR", "frFR", "deDE", "zhCN", "zhTW", "esES", "esMX", "ruRU"
-        }
-        local localeValid = false
-        for _, validLocale in ipairs(validLocales) do
-            if locale == validLocale then
-                localeValid = true
-                break
-            end
-        end
-        
-        if not localeValid then
-            locale = "enUS"  -- default to enUS
-        end
-        
-        local accountId = player:GetAccountId()
-        
-        -- Get player's collected item IDs
-        local collectionQuery = CharDBQuery(string.format(
-            "SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d",
-            accountId
-        ))
-        
-        local collectedIdsList = {}
-        local collectedIdsSet = {}
-        if collectionQuery then
-            repeat
-                local itemId = collectionQuery:GetUInt32(0)
-                table.insert(collectedIdsList, itemId)
-                collectedIdsSet[itemId] = true
-            until not collectionQuery:NextRow()
-        end
-        
-        -- Build quality filter for allowed qualities
-        local qualityList = {}
-        for q, allowed in pairs(ALLOWED_QUALITIES) do
-            if allowed then
-                table.insert(qualityList, q)
-            end
-        end
-        local qualityFilter = string.format("Quality IN (%s)", table.concat(qualityList, ","))
-        
-        -- Build base WHERE conditions
-        local baseConditions = {}
-        table.insert(baseConditions, "displayid > 0")  -- Must have a visual
-        table.insert(baseConditions, qualityFilter)
-        
-        -- Add search condition based on search type
-        local searchPattern = searchText:gsub("%%", "%%%"):gsub("_", "\\_")
-        searchPattern = "%" .. searchPattern .. "%"
-        
-        if searchType == "id" then
-            local itemId = tonumber(searchText)
-            if itemId then
-                table.insert(baseConditions, string.format("entry LIKE '%d%%'", itemId))
-            else
-                searchType = "name"
-            end
-        end
-        
-        if searchType == "displayid" then
-            local displayId = tonumber(searchText)
-            if displayId then
-                table.insert(baseConditions, string.format("displayid = %d", displayId))
-            end
-        end
-        
-        local baseWhereClause = table.concat(baseConditions, " AND ")
-        
-        -- Results storage
-        local collectedResults = {}
-        local slotResultsCollected = {}
-        
-        -- STEP 1: Search collected items first (all of them, no limit)
-        if #collectedIdsList > 0 then
-            local collectedIdsStr = table.concat(collectedIdsList, ",")
-            local query
-            
-            if searchType == "name" then
-                query = WorldDBQuery(string.format(
-                    "SELECT it.entry, it.InventoryType FROM item_template it " ..
-                    "LEFT JOIN item_template_locale itl ON it.entry = itl.ID AND itl.locale = '%s' " ..
-                    "WHERE it.entry IN (%s) AND (it.name LIKE '%s' OR itl.Name LIKE '%s') AND %s",
-                    locale, collectedIdsStr, searchPattern, searchPattern, baseWhereClause
-                ))
-            else
-                query = WorldDBQuery(string.format(
-                    "SELECT entry, InventoryType FROM item_template WHERE entry IN (%s) AND %s",
-                    collectedIdsStr, baseWhereClause
-                ))
-            end
-            
-            if query then
-                repeat
-                    local itemId = query:GetUInt32(0)
-                    local invType = query:GetUInt32(1)
-                    local slot = INV_TYPE_TO_SLOT[invType]
-                    
-                    -- Skip blacklisted items
-                    if not IsItemBlacklisted(itemId) then
-                        table.insert(collectedResults, {itemId = itemId, collected = true})
-                        if slot then
-                            slotResultsCollected[slot] = slotResultsCollected[slot] or {}
-                            table.insert(slotResultsCollected[slot], {itemId = itemId, collected = true})
-                        end
-                    end
-                until not query:NextRow()
-            end
-        end
-        
-        -- STEP 2: Search uncollected items (no limit)
-        local uncollectedResults = {}
-        local slotResultsUncollected = {}
-        
-        local query
-        if searchType == "name" then
-            query = WorldDBQuery(string.format(
-                "SELECT it.entry, it.InventoryType FROM item_template it " ..
-                "LEFT JOIN item_template_locale itl ON it.entry = itl.ID AND itl.locale = '%s' " ..
-                "WHERE (it.name LIKE '%s' OR itl.Name LIKE '%s') AND %s",
-                locale, searchPattern, searchPattern, baseWhereClause
-            ))
-        else
-            query = WorldDBQuery(string.format(
-                "SELECT entry, InventoryType FROM item_template WHERE %s",
-                baseWhereClause
-            ))
-        end
-        
-        if query then
-            repeat
-                local itemId = query:GetUInt32(0)
-                local invType = query:GetUInt32(1)
-                
-                -- Only add if NOT in collected set and NOT blacklisted
-                if not collectedIdsSet[itemId] and not IsItemBlacklisted(itemId) then
-                    local slot = INV_TYPE_TO_SLOT[invType]
-                    table.insert(uncollectedResults, {itemId = itemId, collected = false})
-                    if slot then
-                        slotResultsUncollected[slot] = slotResultsUncollected[slot] or {}
-                        table.insert(slotResultsUncollected[slot], {itemId = itemId, collected = false})
-                    end
-                end
-            until not query:NextRow()
-        end
-        
-        -- Combine results: collected first, then uncollected
-        local allResults = {}
-        for _, item in ipairs(collectedResults) do
-            table.insert(allResults, item)
-        end
-        for _, item in ipairs(uncollectedResults) do
-            table.insert(allResults, item)
-        end
-        
-        -- Combine slot results
-        local slotResults = {}
-        for slot, items in pairs(slotResultsCollected) do
-            slotResults[slot] = slotResults[slot] or {}
-            for _, item in ipairs(items) do
-                table.insert(slotResults[slot], item)
-            end
-        end
-        for slot, items in pairs(slotResultsUncollected) do
-            slotResults[slot] = slotResults[slot] or {}
-            for _, item in ipairs(items) do
-                table.insert(slotResults[slot], item)
-            end
-        end
-        
-        -- Send results back to client
-        AIO.Msg():Add("TRANSMOG", "SearchResults", {
-            allResults = allResults,
-            slotResults = slotResults
-        }):Send(player)
-    end
-    
     -- Request active transmogs (async version)
     TRANSMOG_HANDLER.RequestActiveTransmogs = function(player)
         local guid = player:GetGUIDLow()
@@ -1716,65 +1196,9 @@ if ENABLE_AIO_BRIDGE then
         end)
     end
     
-    -- Request items for specific slot with subclass, quality, and collection filter
-    -- collectionFilter: "All", "Collected", "Uncollected"
-    -- NOTE: This is the LEGACY handler kept for backwards compatibility
-    -- New clients should use RequestSlotCache + RequestCollectionStatus for better performance
-    TRANSMOG_HANDLER.RequestSlotItems = function(player, slotId, subclass, quality, collectionFilter)
-        if slotId == nil then
-            DebugPrint("[Transmog Server] RequestSlotItems received nil slotId")
-            return
-        end
-        
-        local accountId = player:GetAccountId()
-        collectionFilter = collectionFilter or "Collected"  -- Default to Collected
-        
-        local items = {}
-        
-        if collectionFilter == "All" then
-            -- Get all items for slot (collected and uncollected)
-            items = GetAllItemsForSlotFiltered(accountId, slotId, subclass, quality)
-        elseif collectionFilter == "Uncollected" then
-            -- Get only uncollected items for slot
-            items = GetUncollectedItemsForSlotFiltered(accountId, slotId, subclass, quality)
-        else
-            -- Default: Get only collected items (existing behavior)
-            local collectedItems = GetCollectionForSlotFiltered(accountId, slotId, subclass, quality)
-            for _, itemId in ipairs(collectedItems) do
-                table.insert(items, { itemId = itemId, collected = true })
-            end
-        end
-        
-        -- Send in chunks of 50
-        local chunkSize = 50
-        local totalChunks = math.ceil(#items / chunkSize)
-        if totalChunks == 0 then totalChunks = 1 end
-        
-        for chunk = 1, totalChunks do
-            local startIdx = (chunk - 1) * chunkSize + 1
-            local endIdx = math.min(chunk * chunkSize, #items)
-            local chunkItems = {}
-            
-            for i = startIdx, endIdx do
-                -- Items now include collected status
-                if type(items[i]) == "table" then
-                    table.insert(chunkItems, items[i])
-                else
-                    -- Backwards compatibility
-                    table.insert(chunkItems, { itemId = items[i], collected = true })
-                end
-            end
-            
-            AIO.Msg():Add("TRANSMOG", "SlotItems", {
-                slotId = slotId,
-                chunk = chunk,
-                totalChunks = totalChunks,
-                items = chunkItems
-            }):Send(player)
-        end
-    end
+    -- NOTE: RequestSlotItems handler removed - client uses local cache filtering
     
-    -- Apply transmog
+    -- Apply transmog (async version)
     TRANSMOG_HANDLER.ApplyTransmog = function(player, slotId, itemId)
         if not slotId or not itemId then
             AIO.Msg():Add("TRANSMOG", "Error", "INVALID_SLOT_OR_ITEM"):Send(player)
@@ -1789,32 +1213,62 @@ if ENABLE_AIO_BRIDGE then
         
         local accountId = player:GetAccountId()
         local guid = player:GetGUIDLow()
+        local playerName = player:GetName()  -- Store name for callback
         
         -- Debug: log the check
         DebugPrint(string.format("[Transmog] ApplyTransmog: player=%s, slot=%d, item=%d, ALLOW_UNCOLLECTED=%s", 
-            player:GetName(), slotId, itemId, tostring(ALLOW_UNCOLLECTED_TRANSMOG)))
+            playerName, slotId, itemId, tostring(ALLOW_UNCOLLECTED_TRANSMOG)))
         
-        -- Verify player has the appearance (skip if ALLOW_UNCOLLECTED_TRANSMOG is true)
-        if not ALLOW_UNCOLLECTED_TRANSMOG and not HasAppearance(accountId, itemId) then
-            DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: item %d not in collection for account %d", itemId, accountId))
-            AIO.Msg():Add("TRANSMOG", "Error", "APPEARANCE_NOT_COLLECTED"):Send(player)
+        -- If ALLOW_UNCOLLECTED_TRANSMOG is true, skip collection check
+        if ALLOW_UNCOLLECTED_TRANSMOG then
+            -- Save to database (always - even if no item equipped)
+            SaveActiveTransmog(guid, slotId, itemId)
+            
+            -- Get fresh player reference
+            local onlinePlayer = GetPlayerByName(playerName)
+            if onlinePlayer then
+                -- Check if player has an item equipped in the slot
+                local equippedItem = onlinePlayer:GetItemByPos(255, slotId)
+                if equippedItem then
+                    if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
+                        -- Apply visual only if item is equipped
+                        ApplyTransmogVisual(onlinePlayer, slotId, itemId)
+                    end
+                end
+            end
+            
+            -- Always report success since it's saved in mod_transmog_system_active DB even for empty slot
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Applied", { slot = slotId, itemId = itemId }))
             return
         end
         
-        -- Save to database (always - even if no item equipped)
-        SaveActiveTransmog(guid, slotId, itemId)
-        
-        -- Check if player has an item equipped in the slot
-        local equippedItem = player:GetItemByPos(255, slotId)
-        if equippedItem then
-		    if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
-                -- Apply visual only if item is equipped
-                ApplyTransmogVisual(player, slotId, itemId)
-			end
-        end
-        
-        -- Always report success since it's saved in mod_transmog_system_active DB even for empty slot
-        AIO.Msg():Add("TRANSMOG", "Applied", { slot = slotId, itemId = itemId }):Send(player)
+        -- Verify player has the appearance (async)
+        HasAppearanceAsync(accountId, itemId, function(hasItem)
+            if not hasItem then
+                DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: item %d not in collection for account %d", itemId, accountId))
+                SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Error", "APPEARANCE_NOT_COLLECTED"))
+                return
+            end
+            
+            -- Save to database (always - even if no item equipped)
+            SaveActiveTransmog(guid, slotId, itemId)
+            
+            -- Get fresh player reference (they may have disconnected during async)
+            local onlinePlayer = GetPlayerByName(playerName)
+            if onlinePlayer then
+                -- Check if player has an item equipped in the slot
+                local equippedItem = onlinePlayer:GetItemByPos(255, slotId)
+                if equippedItem then
+                    if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
+                        -- Apply visual only if item is equipped
+                        ApplyTransmogVisual(onlinePlayer, slotId, itemId)
+                    end
+                end
+            end
+            
+            -- Always report success since it's saved in mod_transmog_system_active DB even for empty slot
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Applied", { slot = slotId, itemId = itemId }))
+        end)
     end
     
     -- Remove transmog
@@ -1859,35 +1313,15 @@ if ENABLE_AIO_BRIDGE then
         end)
     end
     
-    -- Bulk check appearances (async version)
-    TRANSMOG_HANDLER.CheckAppearances = function(player, itemIds)
-        local accountId = player:GetAccountId()
-        local playerName = player:GetName()  -- Store name for callback
-        
-        -- Get all collected items for this account async
-        GetPlayerCollectionAsync(accountId, function(collectionList)
-            -- Convert to set for O(1) lookup
-            local collectionSet = {}
-            for _, itemId in ipairs(collectionList) do
-                collectionSet[itemId] = true
-            end
-            
-            local results = {}
-            for _, itemId in ipairs(itemIds) do
-                results[itemId] = collectionSet[itemId] == true
-            end
-            
-            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "AppearanceCheckBulk", results))
-        end)
-    end
+    -- NOTE: CheckAppearances (bulk) handler removed - client uses local cache
     
     -- ============================================================================
     -- Enchantment Transmog - AIO Handlers
     -- ============================================================================
     
-    -- Request all available enchant visuals (uses server cache if ready)
+    -- Request all available enchant visuals (uses server cache)
     TRANSMOG_HANDLER.RequestEnchantCollection = function(player)
-        -- Use server cache if available
+        -- Use server cache (always loaded on startup)
         if SERVER_ITEM_CACHE.isReady and #SERVER_ITEM_CACHE.enchants > 0 then
             local enchants = SERVER_ITEM_CACHE.enchants
             
@@ -1914,37 +1348,18 @@ if ENABLE_AIO_BRIDGE then
             return
         end
         
-        -- Fallback to direct query
-        local enchants = GetAllEnchantVisuals()
-        
-        -- Send in chunks
-        local chunkSize = 20
-        local totalChunks = math.ceil(#enchants / chunkSize)
-        if totalChunks == 0 then totalChunks = 1 end
-        
-        for chunk = 1, totalChunks do
-            local startIdx = (chunk - 1) * chunkSize + 1
-            local endIdx = math.min(chunk * chunkSize, #enchants)
-            local chunkEnchants = {}
-            
-            for i = startIdx, endIdx do
-                table.insert(chunkEnchants, enchants[i])
-            end
-            
-            AIO.Msg():Add("TRANSMOG", "EnchantCollectionData", {
-                chunk = chunk,
-                totalChunks = totalChunks,
-                enchants = chunkEnchants
-            }):Send(player)
-        end
+        -- Cache not ready yet
+        AIO.Msg():Add("TRANSMOG", "Error", "ENCHANT_CACHE_NOT_READY"):Send(player)
     end
     
-    -- Request active enchant transmogs
+    -- Request active enchant transmogs (async version)
     TRANSMOG_HANDLER.RequestActiveEnchantTransmogs = function(player)
         local guid = player:GetGUIDLow()
-        local enchantTransmogs = GetActiveEnchantTransmogs(guid)
+        local playerName = player:GetName()  -- Store name for callback
         
-        AIO.Msg():Add("TRANSMOG", "ActiveEnchantTransmogs", enchantTransmogs):Send(player)
+        GetActiveEnchantTransmogsAsync(guid, function(enchantTransmogs)
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "ActiveEnchantTransmogs", enchantTransmogs))
+        end)
     end
     
     -- Apply enchant transmog
@@ -1960,9 +1375,21 @@ if ENABLE_AIO_BRIDGE then
             return
         end
         
-        -- Validate enchant exists in database
-        local enchantInfo = GetEnchantById(enchantId)
-        if not enchantInfo then
+        -- Validate enchant exists (cache must be ready)
+        if not SERVER_ITEM_CACHE.isReady then
+            AIO.Msg():Add("TRANSMOG", "Error", "ENCHANT_CACHE_NOT_READY"):Send(player)
+            return
+        end
+        
+        local enchantValid = false
+        for _, enchant in ipairs(SERVER_ITEM_CACHE.enchants) do
+            if enchant.id == enchantId then
+                enchantValid = true
+                break
+            end
+        end
+        
+        if not enchantValid then
             AIO.Msg():Add("TRANSMOG", "Error", "INVALID_ENCHANT_ID"):Send(player)
             return
         end
@@ -2028,42 +1455,46 @@ if ENABLE_AIO_BRIDGE then
         COLUMN_TO_SLOT[column] = slot
     end
     
-    local function GetPlayerSets(accountId)
-        local query = CharDBQuery(string.format(
-            "SELECT set_number, set_name, slot_head, slot_shoulder, slot_back, slot_chest, " ..
-            "slot_shirt, slot_tabard, slot_wrist, slot_hands, slot_waist, slot_legs, slot_feet, " ..
-            "slot_mainhand, slot_offhand, slot_ranged FROM mod_transmog_system_sets WHERE account_id = %d",
-            accountId
-        ))
-        
-        local sets = {}
-        if query then
-            repeat
-                local setNumber = query:GetUInt8(0)
-                local setName = query:GetString(1)
-                local slots = {
-                    [0]  = query:GetUInt32(2),   -- head
-                    [2]  = query:GetUInt32(3),   -- shoulder
-                    [14] = query:GetUInt32(4),   -- back
-                    [4]  = query:GetUInt32(5),   -- chest
-                    [3]  = query:GetUInt32(6),   -- shirt
-                    [18] = query:GetUInt32(7),   -- tabard
-                    [8]  = query:GetUInt32(8),   -- wrist
-                    [9]  = query:GetUInt32(9),   -- hands
-                    [5]  = query:GetUInt32(10),  -- waist
-                    [6]  = query:GetUInt32(11),  -- legs
-                    [7]  = query:GetUInt32(12),  -- feet
-                    [15] = query:GetUInt32(13),  -- mainhand
-                    [16] = query:GetUInt32(14),  -- offhand
-                    [17] = query:GetUInt32(15),  -- ranged
-                }
-                sets[setNumber] = {
-                    name = setName,
-                    slots = slots
-                }
-            until not query:NextRow()
-        end
-        return sets
+    -- Get player sets async (sync version removed)
+    local function GetPlayerSetsAsync(accountId, callback)
+        CharDBQueryAsync(
+            string.format(
+                "SELECT set_number, set_name, slot_head, slot_shoulder, slot_back, slot_chest, " ..
+                "slot_shirt, slot_tabard, slot_wrist, slot_hands, slot_waist, slot_legs, slot_feet, " ..
+                "slot_mainhand, slot_offhand, slot_ranged FROM mod_transmog_system_sets WHERE account_id = %d",
+                accountId
+            ),
+            function(Q)
+                local sets = {}
+                if Q then
+                    repeat
+                        local setNumber = Q:GetUInt8(0)
+                        local setName = Q:GetString(1)
+                        local slots = {
+                            [0]  = Q:GetUInt32(2),   -- head
+                            [2]  = Q:GetUInt32(3),   -- shoulder
+                            [14] = Q:GetUInt32(4),   -- back
+                            [4]  = Q:GetUInt32(5),   -- chest
+                            [3]  = Q:GetUInt32(6),   -- shirt
+                            [18] = Q:GetUInt32(7),   -- tabard
+                            [8]  = Q:GetUInt32(8),   -- wrist
+                            [9]  = Q:GetUInt32(9),   -- hands
+                            [5]  = Q:GetUInt32(10),  -- waist
+                            [6]  = Q:GetUInt32(11),  -- legs
+                            [7]  = Q:GetUInt32(12),  -- feet
+                            [15] = Q:GetUInt32(13),  -- mainhand
+                            [16] = Q:GetUInt32(14),  -- offhand
+                            [17] = Q:GetUInt32(15),  -- ranged
+                        }
+                        sets[setNumber] = {
+                            name = setName,
+                            slots = slots
+                        }
+                    until not Q:NextRow()
+                end
+                callback(sets)
+            end
+        )
     end
     
     local function SavePlayerSet(accountId, setNumber, setName, slotData)
@@ -2098,12 +1529,14 @@ if ENABLE_AIO_BRIDGE then
     -- Set Management - AIO Handlers
     -- ============================================================================
     
-    -- Request all sets for account
+    -- Request all sets for account (async version)
     TRANSMOG_HANDLER.RequestSets = function(player)
         local accountId = player:GetAccountId()
-        local sets = GetPlayerSets(accountId)
+        local playerName = player:GetName()  -- Store name for callback
         
-        AIO.Msg():Add("TRANSMOG", "SetsData", sets):Send(player)
+        GetPlayerSetsAsync(accountId, function(sets)
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "SetsData", sets))
+        end)
     end
     
     -- Save a new set or update existing
@@ -2142,7 +1575,7 @@ if ENABLE_AIO_BRIDGE then
         }):Send(player)
     end
     
-    -- Load a set (preview only, returns data to client)
+    -- Load a set (preview only, returns data to client) - async version
     TRANSMOG_HANDLER.LoadSet = function(player, setNumber)
         if not setNumber or setNumber < 1 or setNumber > 10 then
             AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
@@ -2150,18 +1583,20 @@ if ENABLE_AIO_BRIDGE then
         end
         
         local accountId = player:GetAccountId()
-        local sets = GetPlayerSets(accountId)
+        local playerName = player:GetName()  -- Store name for callback
         
-        if not sets[setNumber] then
-            AIO.Msg():Add("TRANSMOG", "SetError", "Set not found"):Send(player)
-            return
-        end
-        
-        AIO.Msg():Add("TRANSMOG", "SetLoaded", {
-            setNumber = setNumber,
-            setName = sets[setNumber].name,
-            slots = sets[setNumber].slots
-        }):Send(player)
+        GetPlayerSetsAsync(accountId, function(sets)
+            if not sets[setNumber] then
+                SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "SetError", "Set not found"))
+                return
+            end
+            
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "SetLoaded", {
+                setNumber = setNumber,
+                setName = sets[setNumber].name,
+                slots = sets[setNumber].slots
+            }))
+        end)
     end
     
     -- Delete a set
@@ -2177,7 +1612,7 @@ if ENABLE_AIO_BRIDGE then
         AIO.Msg():Add("TRANSMOG", "SetDeleted", { setNumber = setNumber }):Send(player)
     end
     
-    -- Apply a set (only items in collection will be applied)
+    -- Apply a set (only items in collection will be applied) - async version
     TRANSMOG_HANDLER.ApplySet = function(player, setNumber)
         if not setNumber or setNumber < 1 or setNumber > 10 then
             AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
@@ -2186,43 +1621,62 @@ if ENABLE_AIO_BRIDGE then
         
         local accountId = player:GetAccountId()
         local guid = player:GetGUIDLow()
-        local sets = GetPlayerSets(accountId)
+        local playerName = player:GetName()  -- Store name for callback
         
-        if not sets[setNumber] then
-            AIO.Msg():Add("TRANSMOG", "SetError", "Set not found"):Send(player)
-            return
-        end
-        
-        local setData = sets[setNumber]
-        local appliedSlots = {}
-        local skippedCount = 0
-        
-        for slot, itemId in pairs(setData.slots) do
-            if itemId and itemId > 0 then
-                -- Check if player has this appearance in collection (skip if ALLOW_UNCOLLECTED_TRANSMOG)
-                if ALLOW_UNCOLLECTED_TRANSMOG or HasAppearance(accountId, itemId) then
-                    -- Save to active transmogs
-                    SaveActiveTransmog(guid, slot, itemId)
-                    
-                    -- Apply visual if item equipped
-                    local equippedItem = player:GetItemByPos(255, slot)
-                    if equippedItem and ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
-                        ApplyTransmogVisual(player, slot, itemId)
-                    end
-                    
-                    appliedSlots[slot] = itemId
-                else
-                    skippedCount = skippedCount + 1
-                end
+        -- First get the sets (async)
+        GetPlayerSetsAsync(accountId, function(sets)
+            if not sets[setNumber] then
+                SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "SetError", "Set not found"))
+                return
             end
-        end
-        
-        AIO.Msg():Add("TRANSMOG", "SetApplied", {
-            setNumber = setNumber,
-            setName = setData.name,
-            appliedSlots = appliedSlots,
-            skippedCount = skippedCount
-        }):Send(player)
+            
+            -- Then get the collection (async) to check appearances
+            GetPlayerCollectionAsync(accountId, function(collectionList)
+                -- Convert to set for O(1) lookup
+                local collectionSet = {}
+                for _, itemId in ipairs(collectionList) do
+                    collectionSet[itemId] = true
+                end
+                
+                -- Get player reference
+                local onlinePlayer = GetPlayerByName(playerName)
+                if not onlinePlayer then
+                    DebugPrint(string.format("[Transmog] ApplySet: Player %s disconnected", playerName))
+                    return
+                end
+                
+                local setData = sets[setNumber]
+                local appliedSlots = {}
+                local skippedCount = 0
+                
+                for slot, itemId in pairs(setData.slots) do
+                    if itemId and itemId > 0 then
+                        -- Check if player has this appearance in collection (skip if ALLOW_UNCOLLECTED_TRANSMOG)
+                        if ALLOW_UNCOLLECTED_TRANSMOG or collectionSet[itemId] then
+                            -- Save to active transmogs
+                            SaveActiveTransmog(guid, slot, itemId)
+                            
+                            -- Apply visual if item equipped
+                            local equippedItem = onlinePlayer:GetItemByPos(255, slot)
+                            if equippedItem and ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
+                                ApplyTransmogVisual(onlinePlayer, slot, itemId)
+                            end
+                            
+                            appliedSlots[slot] = itemId
+                        else
+                            skippedCount = skippedCount + 1
+                        end
+                    end
+                end
+                
+                SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "SetApplied", {
+                    setNumber = setNumber,
+                    setName = setData.name,
+                    appliedSlots = appliedSlots,
+                    skippedCount = skippedCount
+                }))
+            end)
+        end)
     end
    
     -- ============================================================================
@@ -2230,6 +1684,8 @@ if ENABLE_AIO_BRIDGE then
     -- ============================================================================
     
     -- Event IDs from Hooks.h (mod-ale/Eluna for AzerothCore)
+
+    -- player event
     local PLAYER_EVENT_ON_LOGIN                     = 3  -- (event, player) 
     local PLAYER_EVENT_ON_LOGOUT                    = 4  -- (event, player)
     local PLAYER_EVENT_ON_EQUIP                     = 29 -- (event, player, item, bag, slot)
@@ -2239,7 +1695,11 @@ if ENABLE_AIO_BRIDGE then
     local PLAYER_EVENT_ON_CREATE_ITEM               = 52 -- (event, player, item, count)
     local PLAYER_EVENT_ON_STORE_NEW_ITEM            = 53 -- (event, player, item, count)
     local PLAYER_EVENT_ON_COMPLETE_QUEST            = 54 -- (event, player, quest)
-    local PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM    = 56 -- (event, player, item, count, voteType, roll)
+    local PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM    = 56 -- (event, player, item, count, voteType, roll)    
+
+    -- creature_event
+    local CREATURE_EVENT_ON_DIED                    = 4  -- (event, creature, killer)
+    local CREATURE_EVENT_ON_SUMMONED                = 22 -- (event, creature, summoner)
     
     -- ============================================================================
     -- Helper Function - Scan Items and Quests
@@ -2253,9 +1713,9 @@ if ENABLE_AIO_BRIDGE then
         for slot = 0, 38 do
             local item = player:GetItemByPos(255, slot)
             if item then
-			    if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
+                if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
                     AddToCollection(player, item:GetEntry(), false)
-				end
+                end
             end
         end
     
@@ -2269,9 +1729,9 @@ if ENABLE_AIO_BRIDGE then
                     for slotInBag = 0, bagSize - 1 do
                         local item = player:GetItemByPos(bagSlot, slotInBag)
                         if item then
-						    if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
+                            if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
                                 AddToCollection(player, item:GetEntry(), false)
-							end
+                            end
                         end
                     end
                 end
@@ -2282,9 +1742,9 @@ if ENABLE_AIO_BRIDGE then
         for slot = 39, 66 do
             local item = player:GetItemByPos(255, slot)
             if item then
-			    if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
+                if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
                     AddToCollection(player, item:GetEntry(), false)
-				end
+                end
             end
         end
     
@@ -2298,9 +1758,9 @@ if ENABLE_AIO_BRIDGE then
                     for slotInBankBag = 0, bankBagSize - 1 do
                         local item = player:GetItemByPos(bankBagSlot, slotInBankBag)
                         if item then
-						    if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
+                            if COLLECTION_ON_CHARACTER_LOGIN_SCANNED_ITEMS then
                                 AddToCollection(player, item:GetEntry(), false)
-							end
+                            end
                         end
                     end
                 end
@@ -2310,114 +1770,165 @@ if ENABLE_AIO_BRIDGE then
 
 
     -- ScanAllQuests is a helper function used to resynchronize item collections from quests completed before the script was installed
+    -- Uses async queries to avoid blocking the server
     local function ScanAllQuests(player)
         if not player then
             return
         end
         
         local guid = player:GetGUIDLow()
+        local playerName = player:GetName()
         
         -- 1. Scan completed quests (already turned in) - get ALL items
-        local completedQuery = CharDBQuery(string.format(
-            "SELECT quest FROM character_queststatus_rewarded WHERE guid = %d",
-            guid
-        ))
-        
-        if completedQuery then
-            repeat
-                local questId = completedQuery:GetUInt32(0)
+        CharDBQueryAsync(
+            string.format("SELECT quest FROM character_queststatus_rewarded WHERE guid = %d", guid),
+            function(completedQuery)
+                if completedQuery then
+                    local questIds = {}
+                    repeat
+                        table.insert(questIds, completedQuery:GetUInt32(0))
+                    until not completedQuery:NextRow()
+                    
+                    -- Process each quest async
+                    for _, questId in ipairs(questIds) do
+                        WorldDBQueryAsync(
+                            string.format(
+                                "SELECT RewardItem1, RewardItem2, RewardItem3, RewardItem4, " ..
+                                "RewardChoiceItemID1, RewardChoiceItemID2, RewardChoiceItemID3, " ..
+                                "RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6, " ..
+                                "StartItem, " ..
+                                "RequiredItemId1, RequiredItemId2, RequiredItemId3, " ..
+                                "RequiredItemId4, RequiredItemId5, RequiredItemId6, " ..
+                                "ItemDrop1, ItemDrop2, ItemDrop3, ItemDrop4 " ..
+                                "FROM quest_template WHERE ID = %d",
+                                questId
+                            ),
+                            function(questQuery)
+                                if questQuery then
+                                    local p = GetPlayerByName(playerName)
+                                    if p then
+                                        for i = 0, 20 do
+                                            local itemId = questQuery:GetUInt32(i)
+                                            if itemId and itemId > 0 then
+                                                if COLLECTION_ON_PREVIOUS_QUESTS then
+                                                    AddToCollection(p, itemId, false)  -- Don't notify for retroactive
+                                                end
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        )
+                    end
+                end
                 
-                -- Get ALL items from completed quests
-                local questQuery = WorldDBQuery(string.format(
-                    "SELECT RewardItem1, RewardItem2, RewardItem3, RewardItem4, " ..
-                    "RewardChoiceItemID1, RewardChoiceItemID2, RewardChoiceItemID3, " ..
-                    "RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6, " ..
-                    "StartItem, " ..
-                    "RequiredItemId1, RequiredItemId2, RequiredItemId3, " ..
-                    "RequiredItemId4, RequiredItemId5, RequiredItemId6, " ..
-                    "ItemDrop1, ItemDrop2, ItemDrop3, ItemDrop4 " ..
-					"FROM quest_template WHERE ID = %d",
-                    questId
-                ))
-                
-                if questQuery then
-                    -- Process all item fields above
-                    for i = 0, 20 do
-                        local itemId = questQuery:GetUInt32(i)
-                        if itemId and itemId > 0 then
-						    if COLLECTION_ON_PREVIOUS_QUESTS then
-                                AddToCollection(player, itemId, true)
-							end
+                -- 2. Scan quests in journal - only get StartItem
+                CharDBQueryAsync(
+                    string.format("SELECT quest FROM character_queststatus WHERE guid = %d AND status > 0", guid),
+                    function(activeQuestsQuery)
+                        if activeQuestsQuery then
+                            local activeQuestIds = {}
+                            repeat
+                                table.insert(activeQuestIds, activeQuestsQuery:GetUInt32(0))
+                            until not activeQuestsQuery:NextRow()
+                            
+                            for _, questId in ipairs(activeQuestIds) do
+                                WorldDBQueryAsync(
+                                    string.format("SELECT StartItem FROM quest_template WHERE ID = %d", questId),
+                                    function(startItemQuery)
+                                        if startItemQuery then
+                                            local startItem = startItemQuery:GetUInt32(0)
+                                            if startItem and startItem > 0 then
+                                                local p = GetPlayerByName(playerName)
+                                                if p and COLLECTION_ON_PREVIOUS_QUESTS then
+                                                    AddToCollection(p, startItem, false)
+                                                end
+                                            end
+                                        end
+                                    end
+                                )
+                            end
                         end
                     end
-                end
-            until not completedQuery:NextRow()
-        end
-        
-        -- 2. Scan quests in journal - only get StartItem
-        local activeQuestsQuery = CharDBQuery(string.format(
-            "SELECT quest FROM character_queststatus WHERE guid = %d AND status > 0",
-            guid
-        ))
-        
-        if activeQuestsQuery then
-            repeat
-                local questId = activeQuestsQuery:GetUInt32(0)
-                
-                -- Only get the StartItem for active quests
-                local startItemQuery = WorldDBQuery(string.format(
-                    "SELECT StartItem FROM quest_template WHERE ID = %d",
-                    questId
-                ))
-                
-                if startItemQuery then
-                    local startItem = startItemQuery:GetUInt32(0)
-                    if startItem and startItem > 0 then
-					    if COLLECTION_ON_PREVIOUS_QUESTS then
-                            AddToCollection(player, startItem, true)
-						end
-                    end
-                end
-            until not activeQuestsQuery:NextRow()
-        end
+                )
+            end
+        )
     end
-	
+    
     -- ============================================================================
     -- PLAYER_EVENT_ON_LOGIN - Scan inventory, quests and apply transmogs
     -- ============================================================================    
     local function OnPlayerLogin(event, player)
-        if ENABLE_SCAN_ITEMS then
-            ScanAllItems(player)
+        local guid = player:GetGUIDLow()
+        local playerName = player:GetName()
+        local accountId = player:GetAccountId()
+        
+        -- Initialize session cache
+        if not PlayerActiveTransmogCache[guid] then
+            PlayerActiveTransmogCache[guid] = { transmogs = {}, enchants = {} }
         end
         
-        if ENABLE_SCAN_QUESTS then
-            ScanAllQuests(player)
-        end
+        -- Pre-populate session notification cache with existing collection
+        -- This prevents notifications for items already in the collection from previous sessions
+        GetPlayerCollectionAsync(accountId, function(collection)
+            local p = GetPlayerByName(playerName)
+            if not p then return end
+            
+            -- Mark all existing collection items as already processed
+            local cache = GetSessionCache(p)
+            for _, itemId in ipairs(collection) do
+                cache[itemId] = true
+            end
+            
+            -- Mark collection as loaded - now notifications are allowed
+            SetCollectionLoaded(p)
+            
+            -- Now run scans AFTER cache is populated
+            if ENABLE_SCAN_ITEMS then
+                ScanAllItems(p)
+            end
+            if ENABLE_SCAN_QUESTS then
+                ScanAllQuests(p)
+            end
+        end)
         
+        -- Load active transmogs and enchants async, then apply
         if ENABLE_APPLY_ALL_TRANSMOGS then
-            ApplyAllTransmogs(player)
-            -- Also apply enchant transmogs
-            ApplyAllEnchantTransmogs(player)
+            GetActiveTransmogsAsync(guid, function(transmogs)
+                -- Cache is updated by GetActiveTransmogsAsync
+                -- Now load enchants
+                GetActiveEnchantTransmogsAsync(guid, function(enchants)
+                    -- Get player again (may have logged out during async)
+                    local p = GetPlayerByName(playerName)
+                    if p then
+                        ApplyAllTransmogsFromCache(p)
+                        ApplyAllEnchantTransmogsFromCache(p)
+                    end
+                end)
+            end)
         end
     end
-	
+    
     RegisterPlayerEvent(PLAYER_EVENT_ON_LOGIN, OnPlayerLogin)
 
     -- ============================================================================
-    -- PLAYER_EVENT_ON_LOGOUT - Clear session notification cache
+    -- PLAYER_EVENT_ON_LOGOUT - Clear session caches
     -- ============================================================================
     
-	local function OnPlayerLogout(event, player)
-        SessionNotifiedItems[player:GetGUIDLow()] = nil
+    local function OnPlayerLogout(event, player)
+        local guid = player:GetGUIDLow()
+        SessionNotifiedItems[guid] = nil
+        SessionCollectionLoaded[guid] = nil
+        ClearPlayerCache(guid)
     end
     
     RegisterPlayerEvent(PLAYER_EVENT_ON_LOGOUT, OnPlayerLogout)
-	
+    
     -- ============================================================================
-    -- PLAYER_EVENT_ON_EQUIP - Equipement Changes
+    -- PLAYER_EVENT_ON_EQUIP - Equipment Changes (uses session cache)
     -- ============================================================================
     
-	local function OnPlayerEquip(event, player, item, bagOrSlot, slot)
+    local function OnPlayerEquip(event, player, item, bagOrSlot, slot)
         if not player or not item then return end
         
         -- Get the actual slot (bagOrSlot is 255 for equipment slots, slot is the equipment slot)
@@ -2428,27 +1939,26 @@ if ENABLE_AIO_BRIDGE then
         
         -- Add to collection
         local itemId = item:GetEntry()
-		if COLLECTION_ON_EQUIP then
+        if COLLECTION_ON_EQUIP then
             AddToCollection(player, itemId, true)
-		end
+        end
         
-        -- Apply transmog if one is active for this slot
+        -- Apply transmog if one is active for this slot (from session cache)
         local guid = player:GetGUIDLow()
-        local transmogs = GetActiveTransmogs(guid)
+        local transmogs = GetCachedActiveTransmogs(guid)
         local activeItemId = transmogs[equipSlot]
         
         if activeItemId then
-		    if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
+            if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
                 ApplyTransmogVisual(player, equipSlot, activeItemId)
-			end
+            end
         end
         
-        -- Also apply enchant transmog if one is active for this slot
+        -- Also apply enchant transmog if one is active for this slot (from session cache)
         if IsEnchantEligibleSlot(equipSlot) then
-            local enchantTransmogs = GetActiveEnchantTransmogs(guid)
+            local enchantTransmogs = GetCachedActiveEnchantTransmogs(guid)
             local activeEnchantId = enchantTransmogs[equipSlot]
             if activeEnchantId then
-                -- Use enchant ID directly
                 ApplyEnchantVisual(player, equipSlot, activeEnchantId)
             end
         end
@@ -2462,9 +1972,9 @@ if ENABLE_AIO_BRIDGE then
     
     local function OnPlayerLootItem(event, player, item, count)
         if not player or not item then return end
-		if COLLECTION_ON_LOOT_ITEM then
+        if COLLECTION_ON_LOOT_ITEM then
             AddToCollection(player, item:GetEntry(), true)
-		end
+        end
     end
     
     RegisterPlayerEvent(PLAYER_EVENT_ON_LOOT_ITEM, OnPlayerLootItem)
@@ -2473,17 +1983,17 @@ if ENABLE_AIO_BRIDGE then
     -- PLAYER_EVENT_ON_COMMAND
     -- ============================================================================
     
-	-- TO DO - GM Command
+    -- TO DO - GM Command
 
     -- ============================================================================
     -- PLAYER_EVENT_ON_QUEST_REWARD_ITEM - when pick a reward
     -- ============================================================================
-	
+    
     local function OnPlayerQuestRewardItem(event, player, item, count)
         if not player or not item then return end
-		if COLLECTION_ON_QUEST_REWARD_ITEM then
+        if COLLECTION_ON_QUEST_REWARD_ITEM then
             AddToCollection(player, item:GetEntry(), true)
-		end
+        end
     end
     
     RegisterPlayerEvent(PLAYER_EVENT_ON_QUEST_REWARD_ITEM, OnPlayerQuestRewardItem)
@@ -2491,12 +2001,12 @@ if ENABLE_AIO_BRIDGE then
     -- ============================================================================
     -- PLAYER_EVENT_ON_CREATE_ITEM - craft
     -- ============================================================================
-	
+    
     local function OnPlayerCreateItem(event, player, item, count)
         if not player or not item then return end
-		if COLLECTION_ON_CREATE_ITEM then
+        if COLLECTION_ON_CREATE_ITEM then
             AddToCollection(player, item:GetEntry(), true)
-		end
+        end
     end
     
     RegisterPlayerEvent(PLAYER_EVENT_ON_CREATE_ITEM, OnPlayerCreateItem)
@@ -2504,13 +2014,13 @@ if ENABLE_AIO_BRIDGE then
     -- ============================================================================
     -- PLAYER_EVENT_ON_STORE_NEW_ITEM - eg. character creation and master loot
     -- ============================================================================
-	
+    
     -- Store new items (catches master loot rule and items from new characters created)
     local function OnPlayerStoreNewItem(event, player, item, count)
         if not player or not item then return end
-		if COLLECTION_ON_STORE_NEW_ITEM then
+        if COLLECTION_ON_STORE_NEW_ITEM then
             AddToCollection(player, item:GetEntry(), true)
-		end
+        end
     end
     
     RegisterPlayerEvent(PLAYER_EVENT_ON_STORE_NEW_ITEM, OnPlayerStoreNewItem)
@@ -2518,43 +2028,49 @@ if ENABLE_AIO_BRIDGE then
     -- ============================================================================
     -- PLAYER_EVENT_ON_COMPLETE_QUEST - when quest is turned 
     -- ============================================================================
-	
-    -- Quest completion - scan for choice rewards the player may have selected
+    
+    -- Quest completion - scan for choice rewards the player may have selected (async)
     local function OnPlayerQuestComplete(event, player, quest)
         if not player or not quest then return end
         
-        -- Get quest rewards from world database
         local questId = quest:GetId()
-        local query = WorldDBQuery(string.format(
-            "SELECT RewardItem1, RewardItem2, RewardItem3, RewardItem4, " ..
-            "RewardChoiceItemID1, RewardChoiceItemID2, RewardChoiceItemID3, " ..
-            "RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6 " ..
-            "FROM quest_template WHERE ID = %d",
-            questId
-        ))
+        local playerName = player:GetName()
         
-        if query then
-            -- Add guaranteed quest rewards to collection
-            for i = 0, 3 do
-                local itemId = query:GetUInt32(i)
-                if itemId and itemId > 0 then
-				    if COLLECTION_ON_COMPLETE_QUEST then
-                        AddToCollection(player, itemId, true)
-					end
+        WorldDBQueryAsync(
+            string.format(
+                "SELECT RewardItem1, RewardItem2, RewardItem3, RewardItem4, " ..
+                "RewardChoiceItemID1, RewardChoiceItemID2, RewardChoiceItemID3, " ..
+                "RewardChoiceItemID4, RewardChoiceItemID5, RewardChoiceItemID6 " ..
+                "FROM quest_template WHERE ID = %d",
+                questId
+            ),
+            function(query)
+                if query then
+                    local p = GetPlayerByName(playerName)
+                    if p then
+                        -- Add guaranteed quest rewards to collection
+                        for i = 0, 3 do
+                            local itemId = query:GetUInt32(i)
+                            if itemId and itemId > 0 then
+                                if COLLECTION_ON_COMPLETE_QUEST then
+                                    AddToCollection(p, itemId, true)
+                                end
+                            end
+                        end
+                        
+                        -- Add choices rewards to collection
+                        for i = 4, 9 do
+                            local itemId = query:GetUInt32(i)
+                            if itemId and itemId > 0 then
+                                if COLLECTION_ON_COMPLETE_QUEST then
+                                    AddToCollection(p, itemId, true)
+                                end
+                            end
+                        end
+                    end
                 end
             end
-    		
-    		-- Add choices rewards to collection
-            for i = 4, 9 do
-                local itemId = query:GetUInt32(i)
-                if itemId and itemId > 0 then
-                    if COLLECTION_ON_COMPLETE_QUEST then
-					    AddToCollection(player, itemId, true)
-					end
-                end
-            end
-            -- Rewards are handled by PLAYER_EVENT_ON_QUEST_REWARD_ITEM
-        end
+        )
     end
     
     RegisterPlayerEvent(PLAYER_EVENT_ON_COMPLETE_QUEST, OnPlayerQuestComplete)
@@ -2562,21 +2078,315 @@ if ENABLE_AIO_BRIDGE then
     -- ============================================================================
     -- PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM - when winning dice roll
     -- ============================================================================
-	
+    
     local function OnPlayerGroupRollRewardItem(event, player, item, count, voteType, roll)
         if not player or not item then return end
-		if COLLECTION_ON_GROUP_ROLL_REWARD_ITEM then
+        if COLLECTION_ON_GROUP_ROLL_REWARD_ITEM then
             AddToCollection(player, item:GetEntry(), true)
-		end
+        end
     end
     
     RegisterPlayerEvent(PLAYER_EVENT_ON_GROUP_ROLL_REWARD_ITEM, OnPlayerGroupRollRewardItem)
     
     -- ============================================================================
-    -- Spell support - Image mirror
+    -- Spell support - Mirror Image
+    -- ============================================================================
+    -- Mirror Image (spell 55342) summons creature entry 31216
+    -- Shows player's transmog appearance on mirror image clones
+    -- 
+    -- Settings (defined at top of file):
+    --   MIRROR_IMAGE_TRANSMOG_ENABLED - Enable/disable the feature
+    --   MIRROR_IMAGE_DEBUG - Enable/disable debug prints
     -- ============================================================================
     
-    -- TO DO
+    local function MirrorDebug(msg)
+        if MIRROR_IMAGE_DEBUG then
+            print(msg)
+        end
+    end
+    
+    if MIRROR_IMAGE_TRANSMOG_ENABLED then
+        local MIRROR_IMAGE_ENTRY = 31216
+        
+        -- Creature events
+        local CREATURE_EVENT_ON_SUMMONED  = 22
+        local CREATURE_EVENT_ON_MOVE_IN_LOS = 27
+        local CREATURE_EVENT_ON_DIED = 4
+        local CREATURE_EVENT_ON_REMOVE = 37
+        local CREATURE_EVENT_ON_CORPSE_REMOVED = 26
+        
+        -- Equipment slots for SMSG_MIRRORIMAGE_DATA
+        local MirrorArmorSlots = {0, 2, 3, 4, 5, 6, 7, 8, 9, 14, 18}
+        local MirrorWeaponSlots = {15, 16, 17}
+        
+        -- Cache: [creatureGUID] = { PacketStore, PlayerCache }
+        local MirrorCache = {}
+        
+        -- ========================================
+        -- Get item display ID
+        -- ========================================
+        local function GetMirrorDisplayId(itemId)
+            if not itemId or itemId == 0 then return 0 end
+            if SERVER_ITEM_CACHE.isReady and SERVER_ITEM_CACHE.byItemId[itemId] then
+                return SERVER_ITEM_CACHE.byItemId[itemId].displayid or 0
+            end
+            local template = GetItemTemplate(itemId)
+            return template and template.displayid or 0
+        end
+        
+        -- ========================================
+        -- Send stored packet via creature broadcast
+        -- ========================================
+        local function SendMirrorPacket(target)
+            if not target then 
+                MirrorDebug("[Mirror Image] ERROR: target is nil in SendMirrorPacket")
+                return 
+            end
+            
+            local tGUID = target:GetGUID()
+            if not tGUID then
+                MirrorDebug("[Mirror Image] ERROR: Could not get GUID from target")
+                return
+            end
+            
+            if not MirrorCache[tGUID] then
+                MirrorDebug(string.format("[Mirror Image] ERROR: No cache for GUID %s", tostring(tGUID)))
+                return
+            end
+            
+            if not MirrorCache[tGUID].PacketStore then
+                MirrorDebug("[Mirror Image] ERROR: No packet stored")
+                return
+            end
+            
+            MirrorDebug(string.format("[Mirror Image] Broadcasting packet for GUID %s", tostring(tGUID)))
+            target:SendPacket(MirrorCache[tGUID].PacketStore)
+        end
+        
+        -- ========================================
+        -- ON_SUMMONED - Build packet and apply transmog appearance
+        -- ========================================
+        local function OnMirrorImageSummoned(event, creature, summoner)
+            MirrorDebug("[Mirror Image] === ON_SUMMONED EVENT ===")
+            
+            if not creature then
+                MirrorDebug("[Mirror Image] ERROR: creature is nil")
+                return
+            end
+            if not summoner then
+                MirrorDebug("[Mirror Image] ERROR: summoner is nil")
+                return
+            end
+            if summoner:GetObjectType() ~= "Player" then
+                MirrorDebug("[Mirror Image] ERROR: summoner is not a player")
+                return
+            end
+            
+            local player = summoner
+            local target = creature
+            local tGUID = target:GetGUID()
+            
+            if not tGUID then
+                MirrorDebug("[Mirror Image] ERROR: Could not get creature GUID")
+                return
+            end
+            
+            MirrorDebug(string.format("[Mirror Image] Summoned for %s, Creature GUID: %s", player:GetName(), tostring(tGUID)))
+            MirrorDebug(string.format("[Mirror Image] Player DisplayID: %d, Race: %d, Gender: %d, Class: %d", 
+                player:GetDisplayId(), player:GetRace(), player:GetGender(), player:GetClass()))
+            
+            -- Initialize cache
+            MirrorCache[tGUID] = {
+                PacketStore = nil,
+                PlayerCache = {}
+            }
+            
+            -- Build SMSG_MIRRORIMAGE_DATA packet
+            local packet = CreatePacket(0x402, 68)
+            
+            packet:WriteGUID(tGUID)
+            packet:WriteULong(player:GetDisplayId())
+            packet:WriteUByte(player:GetRace())
+            packet:WriteUByte(player:GetGender())
+            packet:WriteUByte(player:GetClass())
+            packet:WriteUByte(player:GetByteValue(153, 0))  -- Skin
+            packet:WriteUByte(player:GetByteValue(153, 1))  -- Face
+            packet:WriteUByte(player:GetByteValue(153, 2))  -- Hair Style
+            packet:WriteUByte(player:GetByteValue(153, 3))  -- Hair Color
+            packet:WriteUByte(player:GetByteValue(154, 0))  -- Facial Hair
+            
+            if player:IsInGuild() then
+                packet:WriteULong(player:GetGuildId())
+            else
+                packet:WriteULong(0)
+            end
+            
+            -- Armor display IDs (with transmog support)
+            MirrorDebug("[Mirror Image] === ARMOR DISPLAY IDS ===")
+            for i, slot in ipairs(MirrorArmorSlots) do
+                local displayId = 0
+                local source = "none"
+                
+                -- Get equipped item's display ID first
+                local item = player:GetEquippedItemBySlot(slot)
+                if item then
+                    displayId = item:GetDisplayId()
+                    source = string.format("item %d", item:GetEntry())
+                end
+                
+                -- Check for transmog override
+                local field = PLAYER_VISIBLE_ITEM_FIELDS[slot]
+                if field then
+                    local transmogEntry = player:GetUInt32Value(field)
+                    if transmogEntry and transmogEntry > 0 then
+                        local transmogDisplayId = GetMirrorDisplayId(transmogEntry)
+                        if transmogDisplayId > 0 then
+                            displayId = transmogDisplayId
+                            source = string.format("transmog %d", transmogEntry)
+                        end
+                    end
+                end
+                
+                MirrorDebug(string.format("[Mirror Image] Slot %d: DisplayID = %d (%s)", slot, displayId, source))
+                packet:WriteULong(displayId)
+            end
+            MirrorDebug("[Mirror Image] === END ARMOR ===")
+            
+            -- Store packet
+            MirrorCache[tGUID].PacketStore = packet
+            MirrorCache[tGUID].PlayerCache[player:GetGUID()] = true
+            
+            -- Set creature visuals
+            target:SetUInt32Value(60, 16)  -- Mirror Image flag
+            target:SetDisplayId(player:GetDisplayId())
+            
+            -- Weapons (with transmog support)
+            MirrorDebug("[Mirror Image] === WEAPONS ===")
+            for i, slot in ipairs(MirrorWeaponSlots) do
+                local itemEntry = 0
+                local source = "none"
+                
+                -- Get equipped item entry first
+                local item = player:GetEquippedItemBySlot(slot)
+                if item then
+                    itemEntry = item:GetEntry()
+                    source = "equipped"
+                end
+                
+                -- Check for transmog override
+                local field = PLAYER_VISIBLE_ITEM_FIELDS[slot]
+                if field then
+                    local transmogEntry = player:GetUInt32Value(field)
+                    if transmogEntry and transmogEntry > 0 then
+                        itemEntry = transmogEntry
+                        source = "transmog"
+                    end
+                end
+                
+                MirrorDebug(string.format("[Mirror Image] Weapon slot %d: Entry = %d (%s)", slot, itemEntry, source))
+                target:SetUInt32Value(56 + (i - 1), itemEntry)
+            end
+            MirrorDebug("[Mirror Image] === END WEAPONS ===")
+            
+            -- Send packet with delay and immediately
+            MirrorDebug("[Mirror Image] Sending initial packet...")
+            CreateLuaEvent(function() SendMirrorPacket(target) end, player:GetLatency() + 100, 1)
+            
+            MirrorDebug("[Mirror Image] Also sending packet immediately...")
+            target:SendPacket(packet)
+            
+            MirrorDebug("[Mirror Image] === SUMMONED COMPLETE ===")
+        end
+        
+        -- ========================================
+        -- ON_MOVE_IN_LOS - Handle players entering range
+        -- ========================================
+        local function OnMirrorImageLOS(event, creature, unit)
+            if not creature or not unit then return end
+            
+            local unitType = unit:GetObjectType()
+            MirrorDebug(string.format("[Mirror Image] LOS: unit type = %s", tostring(unitType)))
+            
+            if unitType ~= "Player" then return end
+            
+            local player = unit
+            local tGUID = creature:GetGUID()
+            
+            MirrorDebug(string.format("[Mirror Image] LOS: Player %s, Creature GUID %s", player:GetName(), tostring(tGUID)))
+            
+            if not tGUID or not MirrorCache[tGUID] then 
+                MirrorDebug("[Mirror Image] LOS: No cache for this creature")
+                return 
+            end
+            
+            local playerGUID = player:GetGUID()
+            if MirrorCache[tGUID].PlayerCache[playerGUID] == true then 
+                MirrorDebug(string.format("[Mirror Image] LOS: %s already in cache, skipping", player:GetName()))
+                return 
+            end
+            
+            MirrorCache[tGUID].PlayerCache[playerGUID] = true
+            MirrorDebug(string.format("[Mirror Image] LOS: Sending packet to %s", player:GetName()))
+            CreateLuaEvent(function() SendMirrorPacket(creature) end, player:GetLatency() + 100, 1)
+        end
+        
+        -- ========================================
+        -- Cleanup
+        -- ========================================
+        local function CleanupMirrorCache(creatureGUID)
+            if MirrorCache[creatureGUID] then
+                MirrorCache[creatureGUID] = nil
+                MirrorDebug(string.format("[Mirror Image] Cache cleaned: %s", tostring(creatureGUID)))
+            end
+        end
+        
+        local function OnMirrorImageDied(event, creature, killer)
+            MirrorDebug("[Mirror Image] === DIED EVENT ===")
+            if creature then
+                local guid = creature:GetGUID()
+                if guid then CleanupMirrorCache(guid) end
+            end
+        end
+        
+        local function OnMirrorImageRemove(event, creature)
+            MirrorDebug("[Mirror Image] === REMOVE EVENT ===")
+            if creature then
+                local guid = creature:GetGUID()
+                if guid then CleanupMirrorCache(guid) end
+            end
+        end
+        
+        local function OnMirrorImageCorpseRemoved(event, creature, respawnDelay)
+            MirrorDebug("[Mirror Image] === CORPSE_REMOVED EVENT ===")
+            if creature then
+                local guid = creature:GetGUID()
+                if guid then CleanupMirrorCache(guid) end
+            end
+        end
+        
+        -- Player logout - clear from cache
+        local function OnPlayerLogoutMirror(event, player)
+            if not player then return end
+            local playerGUID = player:GetGUID()
+            for _, cache in pairs(MirrorCache) do
+                if cache.PlayerCache and cache.PlayerCache[playerGUID] then
+                    cache.PlayerCache[playerGUID] = nil
+                end
+            end
+        end
+        
+        RegisterPlayerEvent(4, OnPlayerLogoutMirror)
+        
+        -- Register creature events
+        MirrorDebug("[Mirror Image] Registering creature events for entry " .. MIRROR_IMAGE_ENTRY)
+        RegisterCreatureEvent(MIRROR_IMAGE_ENTRY, CREATURE_EVENT_ON_SUMMONED, OnMirrorImageSummoned)
+        RegisterCreatureEvent(MIRROR_IMAGE_ENTRY, CREATURE_EVENT_ON_MOVE_IN_LOS, OnMirrorImageLOS)
+        RegisterCreatureEvent(MIRROR_IMAGE_ENTRY, CREATURE_EVENT_ON_DIED, OnMirrorImageDied)
+        RegisterCreatureEvent(MIRROR_IMAGE_ENTRY, CREATURE_EVENT_ON_REMOVE, OnMirrorImageRemove)
+        RegisterCreatureEvent(MIRROR_IMAGE_ENTRY, CREATURE_EVENT_ON_CORPSE_REMOVED, OnMirrorImageCorpseRemoved)
+        
+        print("[Transmog] Mirror Image transmog support enabled" .. (MIRROR_IMAGE_DEBUG and " (debug ON)" or ""))
+    end
     
     -- ============================================================================
     -- SERVER STARTUP - Build Cache

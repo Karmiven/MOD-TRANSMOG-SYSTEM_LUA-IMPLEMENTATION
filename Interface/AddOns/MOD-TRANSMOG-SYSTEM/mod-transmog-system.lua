@@ -551,14 +551,6 @@ local function RequestActiveTransmogsFromServer()
     AIO.Msg():Add("TRANSMOG", "RequestActiveTransmogs"):Send()
 end
 
--- DEPRECATED: No longer used - all item data comes from local cache
--- Kept for reference only
---[[
-local function RequestSlotItemsFromServer(slotId, subclass, quality, collectionFilter)
-    AIO.Msg():Add("TRANSMOG", "RequestSlotItems", slotId, subclass, quality, collectionFilter or "Collected"):Send()
-end
---]]
-
 -- ============================================================================
 -- CLIENT-SIDE CACHE FUNCTIONS
 -- ============================================================================
@@ -1025,103 +1017,23 @@ end
 -- Legacy Handlers (kept for backwards compatibility)
 -- ============================================================================
 
--- Buffer for accumulating chunked search results
-local searchResultsBuffer = {}
-local searchSlotResultsBuffer = {}
-local searchTotalChunks = 0
-local searchReceivedChunks = 0
+-- NOTE: SearchResults handler removed - client uses local cache filtering
 
-TRANSMOG_HANDLER.SearchResults = function(player, data)
-    if not data then return end
+-- Error handler for server-side errors
+TRANSMOG_HANDLER.Error = function(player, errorCode)
+    local errorMessages = {
+        ["INVALID_SLOT"] = L["INVALID_SLOT"] or "Invalid slot",
+        ["INVALID_SLOT_OR_ITEM"] = L["INVALID_SLOT_OR_ITEM"] or "Invalid slot or item",
+        ["INVALID_SLOT_OR_ENCHANT"] = L["INVALID_SLOT_OR_ENCHANT"] or "Invalid slot or enchant",
+        ["SLOT_NOT_ENCHANT_ELIGIBLE"] = L["SLOT_NOT_ENCHANT_ELIGIBLE"] or "This slot cannot have enchant transmog",
+        ["INVALID_ENCHANT_ID"] = L["INVALID_ENCHANT_ID"] or "Invalid enchant ID",
+        ["ENCHANT_CACHE_NOT_READY"] = L["ENCHANT_CACHE_NOT_READY"] or "Enchant cache not ready, please wait",
+        ["NOT_IN_COLLECTION"] = L["NOT_IN_COLLECTION"] or "Appearance not in collection",
+        ["ITEM_NOT_ELIGIBLE"] = L["ITEM_NOT_ELIGIBLE"] or "Item not eligible for transmog",
+    }
     
-    local chunk = data.chunk or 1
-    local totalChunks = data.totalChunks or 1
-    local totalResults = data.totalResults or #(data.allResults or {})
-    
-    -- Initialize buffers on first chunk
-    if chunk == 1 then
-        searchResultsBuffer = {}
-        searchSlotResultsBuffer = {}
-        searchTotalChunks = totalChunks
-        searchReceivedChunks = 0
-    end
-    
-    -- Accumulate results
-    if data.allResults then
-        for _, item in ipairs(data.allResults) do
-            table.insert(searchResultsBuffer, item)
-        end
-    end
-    
-    if data.slotResults then
-        for slot, items in pairs(data.slotResults) do
-            searchSlotResultsBuffer[slot] = searchSlotResultsBuffer[slot] or {}
-            for _, item in ipairs(items) do
-                table.insert(searchSlotResultsBuffer[slot], item)
-            end
-        end
-    end
-    
-    searchReceivedChunks = searchReceivedChunks + 1
-    
-    -- Update progress on main frame
-    if mainFrame and mainFrame.pageText and searchReceivedChunks < searchTotalChunks then
-        mainFrame.pageText:SetText(string.format("Loading search... %d/%d", searchReceivedChunks, searchTotalChunks))
-    end
-    
-    -- When all chunks received, finalize
-    if searchReceivedChunks >= searchTotalChunks then
-        searchActive = true
-        searchResults = searchResultsBuffer
-        searchSlotResults = searchSlotResultsBuffer
-        
-        print(string.format("[Transmog] Search found %d total items", #searchResults))
-        
-        -- Count matches per slot for debugging
-        if slotButtons then
-            for slotName, btn in pairs(slotButtons) do
-                local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
-                local hasMatches = searchSlotResults[slotId] and #searchSlotResults[slotId] > 0
-                if hasMatches then
-                    print(string.format("[Transmog] Slot %s (id: %d) has %d matches", 
-                        slotName, slotId, #searchSlotResults[slotId]))
-                end
-            end
-        end
-        
-        -- Update slot button icons to show search highlights
-        C_Timer.After(0, function()
-            UpdateSlotButtonIcons()
-        end)
-        
-        -- If current slot has matches, show them
-        local currentSlotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-        if searchSlotResults[currentSlotId] then
-            currentItems = searchSlotResults[currentSlotId]
-            print(string.format("[Transmog] Showing %d matches for current slot %s", #currentItems, currentSlot))
-        else
-            currentItems = {}
-            print(string.format("[Transmog] No matches for current slot %s", currentSlot))
-        end
-        
-        currentPage = 1
-        UpdatePreviewGrid()
-        
-        -- Update page text
-        local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
-        if mainFrame and mainFrame.pageText then
-            if #searchResults > 0 then
-                mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages) .. " | " .. 
-                    string.format("Search: %d items (%d in %s)", #searchResults, #currentItems, currentSlot))
-            else
-                mainFrame.pageText:SetText("No results found")
-            end
-        end
-        
-        -- Clear buffers
-        searchResultsBuffer = {}
-        searchSlotResultsBuffer = {}
-    end
+    local message = errorMessages[errorCode] or errorCode
+    print(string.format("|cffFF0000[Transmog] %s|r", message))
 end
 
 TRANSMOG_HANDLER.CollectionData = function(player, data)
@@ -1200,15 +1112,7 @@ TRANSMOG_HANDLER.AppearanceCheck = function(player, data)
     end
 end
 
-TRANSMOG_HANDLER.AppearanceCheckBulk = function(player, results)
-    for itemId, collected in pairs(results) do
-        if collected then
-            collectedAppearances[itemId] = true
-            TransmogDB.collection = TransmogDB.collection or {}
-            TransmogDB.collection[itemId] = true
-        end
-    end
-end
+-- NOTE: AppearanceCheckBulk handler removed - client uses local cache
 
 -- New appearance unlocked notification
 TRANSMOG_HANDLER.NewAppearance = function(player, data)
@@ -1252,65 +1156,7 @@ TRANSMOG_HANDLER.RetroactiveUnlock = function(player, count)
     end
 end
 
--- Receive items for a specific slot
-TRANSMOG_HANDLER.SlotItems = function(player, data)
-    if not data then return end
-    
-    local slotId = data.slotId
-    if slotId == nil then return end
-    
-    -- Only process if this is for the currently selected slot
-    local currentSlotId = currentSlot and SLOT_NAME_TO_EQUIP_SLOT[currentSlot] or nil
-    if currentSlotId ~= slotId then return end
-    
-    -- Initialize buffer on first chunk
-    if data.chunk == 1 then
-        currentItems = {}
-    end
-    
-    -- Add items to buffer
-    -- NEW: Items now come with collected status from server
-    if data.items then
-        for _, item in ipairs(data.items) do
-            if item and item.itemId then
-                -- Store as table with itemId and collected status
-                table.insert(currentItems, {
-                    itemId = item.itemId,
-                    collected = item.collected ~= false  -- Default to true for backwards compatibility
-                })
-                -- Also update local collection cache if collected
-                if item.collected ~= false then
-                    collectedAppearances[item.itemId] = true
-                    TransmogDB.collection = TransmogDB.collection or {}
-                    TransmogDB.collection[item.itemId] = true
-                end
-            end
-        end
-    end
-    
-    -- When all chunks received, sort and update the display
-    if data.chunk == data.totalChunks then
-        -- NEW: Sort items - collected first, then uncollected
-        table.sort(currentItems, function(a, b)
-            if a.collected and not b.collected then
-                return true
-            elseif not a.collected and b.collected then
-                return false
-            else
-                return a.itemId < b.itemId
-            end
-        end)
-        
-        currentPage = 1
-        UpdatePreviewGrid()
-        
-        -- Update page text
-        local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
-        if mainFrame and mainFrame.pageText then
-            mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages))
-        end
-    end
-end
+-- NOTE: SlotItems handler removed - client uses local cache filtering
 
 -- ============================================================================
 -- Set Management AIO Handlers
@@ -4145,9 +3991,53 @@ local function CreateMainFrame()
     resetBtn:SetSize(65, 22)
     resetBtn:SetPoint("TOPLEFT", dressingRoom, "BOTTOMLEFT", 10, -8)
     resetBtn:SetText(L["RESET"])
-    resetBtn:SetScript("OnClick", function()
-        dressingRoom:Reset()
-        PlaySound("igMainMenuOptionCheckBoxOn")
+    resetBtn:SetScript("OnClick", function(self, button)
+        if button == "RightButton" then
+            -- Right-Click: Clear ALL active transmogs (like right-clicking slots individually)
+            local clearedCount = 0
+            for _, slotName in ipairs(SLOT_ORDER) do
+                local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+                if slotId then
+                    -- Check if slot has active transmog (activeTransmogs uses slotId as key)
+                    if activeTransmogs[slotId] then
+                        RemoveTransmog(slotName)
+                        clearedCount = clearedCount + 1
+                    end
+                    -- Also clear enchant if applicable
+                    if activeEnchantTransmogs[slotId] then
+                        RemoveEnchantTransmog(slotName)
+                        clearedCount = clearedCount + 1
+                    end
+                end
+            end
+            -- Also reset the dressing room
+            dressingRoom:Reset()
+            -- Clear all selections
+            slotSelectedItems = {}
+            slotSelectedEnchants = {}
+            PlaySound("igMainMenuOptionCheckBoxOn")
+            if clearedCount > 0 then
+                print(string.format(L["CLEAR_ALL_SUCCESS"] or "|cff00ff00[Transmog]|r Cleared %d transmog slots", clearedCount))
+            else
+                print(L["CLEAR_ALL_NONE"] or "|cff00ff00[Transmog]|r No active transmogs to clear")
+            end
+        else
+            -- Left-Click: Reset dressing room preview only
+            dressingRoom:Reset()
+            PlaySound("igMainMenuOptionCheckBoxOn")
+        end
+    end)
+    resetBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    resetBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText(L["RESET_TOOLTIP"] or "Reset Preview", 1, 1, 1)
+        GameTooltip:AddLine(L["RESET_DESC"] or "Resets the dressing room to your current appearance", 0.7, 0.7, 0.7, true)
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(L["RESET_RIGHTCLICK_HINT"] or "|cffff0000Right-Click|r to clear ALL active transmogs", 1, 0.8, 0, true)
+        GameTooltip:Show()
+    end)
+    resetBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
     end)
     
     local undressBtn = CreateFrame("Button", "$parentUndress", frame, "UIPanelButtonTemplate")
@@ -4159,32 +4049,51 @@ local function CreateMainFrame()
         PlaySound("igMainMenuOptionCheckBoxOn")
     end)
     
-    -- Apply button for current slot
+    -- Apply button - applies ALL selected items/enchants (cyan preview)
     local applyBtn = CreateFrame("Button", "$parentApply", frame, "UIPanelButtonTemplate")
     applyBtn:SetSize(80, 22)
     applyBtn:SetPoint("LEFT", undressBtn, "RIGHT", 5, 0)
     applyBtn:SetText(L["APPLY"])
     applyBtn:SetScript("OnClick", function()
+        local appliedCount = 0
+        
         if currentTransmogMode == TRANSMOG_MODE_ENCHANT then
-            -- Apply selected enchant
-            local selectedEnchant = slotSelectedEnchants[currentSlot]
-            if selectedEnchant then
-                ApplyEnchantTransmog(currentSlot, selectedEnchant)
-                PlaySound("igCharacterInfoTab")
-            else
-                print(L["SELECT_ENCHANT_FIRST"] or "Select an enchant to apply")
+            -- Apply ALL selected enchants across all weapon slots
+            for _, slotName in ipairs(SLOT_ORDER) do
+                local selectedEnchant = slotSelectedEnchants[slotName]
+                if selectedEnchant then
+                    ApplyEnchantTransmog(slotName, selectedEnchant)
+                    appliedCount = appliedCount + 1
+                end
             end
         else
-            -- Apply selected item
-            local selectedItem = slotSelectedItems[currentSlot]
-            if selectedItem then
-                -- Let server validate collection status (respects ALLOW_UNCOLLECTED_TRANSMOG setting)
-                ApplyTransmog(currentSlot, selectedItem)
-                PlaySound("igCharacterInfoTab")
-            else
-                print(L["SELECT_APPEARANCE_FIRST"] or "Select an appearance to apply")
+            -- Apply ALL selected items across all slots
+            for _, slotName in ipairs(SLOT_ORDER) do
+                local selectedItem = slotSelectedItems[slotName]
+                if selectedItem then
+                    ApplyTransmog(slotName, selectedItem)
+                    appliedCount = appliedCount + 1
+                end
             end
         end
+        
+        if appliedCount > 0 then
+            PlaySound("igCharacterInfoTab")
+            print(string.format(L["APPLY_ALL_SUCCESS"] or "|cff00ff00[Transmog]|r Applied %d appearances", appliedCount))
+        else
+            print(L["APPLY_ALL_NONE"] or "|cffff0000[Transmog]|r No appearances selected to apply")
+        end
+    end)
+    applyBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText(L["APPLY_ALL_TOOLTIP"] or "Apply All Selected", 1, 1, 1)
+        GameTooltip:AddLine(L["APPLY_ALL_DESC"] or "Applies all items shown with cyan border to your character", 0.7, 0.7, 0.7, true)
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine(L["APPLY_SINGLE_HINT"] or "|cff00ff00Shift+Click|r on a grid item to apply only that appearance", 0.7, 0.7, 0.7, true)
+        GameTooltip:Show()
+    end)
+    applyBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
     end)
     
     -- Set management controls (below dressing room buttons)
