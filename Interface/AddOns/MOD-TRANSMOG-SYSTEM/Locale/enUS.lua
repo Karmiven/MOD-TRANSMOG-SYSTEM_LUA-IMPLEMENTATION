@@ -183,6 +183,7 @@ L["Holy"] = "Holy"
 L["Shadow"] = "Shadow"
 L["Physical"] = "Physical"
 L["Shaman"] = "Shaman"
+
 -- Settings Panel
 L["SETTINGS"] = "Settings"
 L["BACK"] = "Back"
@@ -213,6 +214,8 @@ L["SETTING_SHOW_NEW"] = "Show \"New Appearance\" in tooltip"
 -- Grid Preview Settings
 L["SETTINGS_GRID_PREVIEW"] = "Grid Preview Settings"
 L["SETTING_HIDE_HAIR_CLOAK"] = "Hide hair on Cloak slot preview"
+L["SETTING_HIDE_HAIR_CHEST"] = "Hide hair/beard on Chest slot preview"
+L["SETTING_HIDE_HAIR_SHIRT"] = "Hide hair/beard on Shirt slot preview"
 L["SETTING_HIDE_HAIR_TABARD"] = "Hide hair/beard on Tabard slot preview"
 
 -- Settings Info

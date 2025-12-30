@@ -214,6 +214,8 @@ L["SETTING_SHOW_NEW"] = "Afficher \"Nouvelle apparence\" dans l'infobulle"
 -- Grid Preview Settings
 L["SETTINGS_GRID_PREVIEW"] = "Paramètres d'aperçu de la grille"
 L["SETTING_HIDE_HAIR_CLOAK"] = "Masquer les cheveux sur l'aperçu des capes"
+L["SETTING_HIDE_HAIR_CHEST"] = "Masquer cheveux/barbe sur l'aperçu des torses"
+L["SETTING_HIDE_HAIR_SHIRT"] = "Masquer cheveux/barbe sur l'aperçu des chemises"
 L["SETTING_HIDE_HAIR_TABARD"] = "Masquer cheveux/barbe sur l'aperçu des tabards"
 
 -- Settings Info

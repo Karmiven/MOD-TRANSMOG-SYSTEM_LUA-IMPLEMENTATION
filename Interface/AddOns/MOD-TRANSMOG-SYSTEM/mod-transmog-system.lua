@@ -52,6 +52,12 @@ local function InitializeSettings()
     if TransmogSettings.account.hideHairOnCloakPreview == nil then
         TransmogSettings.account.hideHairOnCloakPreview = true
     end
+    if TransmogSettings.account.hideHairOnChestPreview == nil then
+        TransmogSettings.account.hideHairOnChestPreview = true
+    end
+    if TransmogSettings.account.hideHairOnShirtPreview == nil then
+        TransmogSettings.account.hideHairOnShirtPreview = true
+    end
     if TransmogSettings.account.hideHairOnTabardPreview == nil then
         TransmogSettings.account.hideHairOnTabardPreview = true
     end
@@ -1910,6 +1916,10 @@ local function SetupItemModel(frame, slotName)
     -- Item 16026 = Judgement Helm replica (hides hair + beard)
     if slotName == "Back" and GetSetting("hideHairOnCloakPreview") == true then
         model:TryOn(12185)  -- Hide hair only for cloaks
+    elseif slotName == "Chest" and GetSetting("hideHairOnChestPreview") == true then
+        model:TryOn(16026)  -- Hide hair + beard for chests	
+    elseif slotName == "Shirt" and GetSetting("hideHairOnShirtPreview") == true then
+        model:TryOn(16026)  -- Hide hair + beard for shirts
     elseif slotName == "Tabard" and GetSetting("hideHairOnTabardPreview") == true then
         model:TryOn(16026)  -- Hide hair + beard for tabards
     end
@@ -3777,6 +3787,8 @@ local function CreateSettingsPanel(parent)
     yOffset = yOffset - 5
     
     CreateCheckbox(L["SETTING_HIDE_HAIR_CLOAK"] or "Hide hair on Cloak slot preview", "hideHairOnCloakPreview", false)
+    CreateCheckbox(L["SETTING_HIDE_HAIR_CHEST"] or "Hide hair/beard on Chest slot preview", "hideHairOnChestPreview", false)
+    CreateCheckbox(L["SETTING_HIDE_HAIR_SHIRT"] or "Hide hair/beard on Shirt slot preview", "hideHairOnShirtPreview", false)
     CreateCheckbox(L["SETTING_HIDE_HAIR_TABARD"] or "Hide hair/beard on Tabard slot preview", "hideHairOnTabardPreview", false)
     
     -- ========================================
