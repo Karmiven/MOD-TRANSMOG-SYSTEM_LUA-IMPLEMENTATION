@@ -165,7 +165,7 @@ local MIRROR_IMAGE_DEBUG = false
 --
 -- If not changed, clients keep their cached item list across server restarts,
 -- significantly reducing login bandwidth and database load.
-local CACHE_VERSION = 1
+local CACHE_VERSION = 153
 
 	
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -331,6 +331,7 @@ if ENABLE_AIO_BRIDGE then
         SERVER_ITEM_CACHE.version = CACHE_VERSION
         SERVER_ITEM_CACHE.bySlot = {}
         SERVER_ITEM_CACHE.byItemId = {}
+        SERVER_ITEM_CACHE.byDisplayId = {}  -- Index by display ID for shared appearance lookup
         
         -- Initialize all slot tables
         for slotId, _ in pairs(SLOT_INV_TYPES) do
@@ -386,6 +387,12 @@ if ENABLE_AIO_BRIDGE then
                             displayid = displayId,
                             inventoryType = invType
                         }
+                        
+                        -- Also index by displayId for shared appearance lookup
+                        if not SERVER_ITEM_CACHE.byDisplayId[displayId] then
+                            SERVER_ITEM_CACHE.byDisplayId[displayId] = {}
+                        end
+                        table.insert(SERVER_ITEM_CACHE.byDisplayId[displayId], itemId)
                         
                         count = count + 1
                     end
@@ -1304,7 +1311,28 @@ if ENABLE_AIO_BRIDGE then
         -- Verify player has the appearance (async)
         HasAppearanceAsync(accountId, itemId, function(hasItem)
             if hasItem then
-                -- Player has the exact item, use it
+                -- Player has the exact item in collection
+                -- When ALLOW_DISPLAY_ID_TRANSMOG is false, we need extra validation
+                -- to prevent client-side display ID substitution bypass
+                if not ALLOW_DISPLAY_ID_TRANSMOG then
+                    -- Check if this item shares a display ID with other items
+                    local displayId = GetCachedDisplayId(itemId)
+                    if displayId and displayId > 0 then
+                        -- Get all items with this display ID from server cache
+                        local sharedItems = SERVER_ITEM_CACHE.byDisplayId and SERVER_ITEM_CACHE.byDisplayId[displayId]
+                        if sharedItems and #sharedItems > 1 then
+                            -- Multiple items share this display ID
+                            -- In strict mode, we cannot allow this because the client may have substituted
+                            -- an uncollected item with a collected one sharing the same display ID
+                            -- Block and require ALLOW_DISPLAY_ID_TRANSMOG = true for shared appearances
+                            DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: item %d shares display ID %d with %d other items. ALLOW_DISPLAY_ID_TRANSMOG=false prevents shared display ID transmog for account %d", 
+                                itemId, displayId, #sharedItems - 1, accountId))
+                            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Error", "SHARED_DISPLAY_ID_BLOCKED"))
+                            return
+                        end
+                    end
+                end
+                -- Either ALLOW_DISPLAY_ID_TRANSMOG is true, or item has unique display ID
                 DoApplyTransmog(itemId)
                 return
             end

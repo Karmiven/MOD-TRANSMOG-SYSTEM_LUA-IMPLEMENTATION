@@ -601,6 +601,51 @@ local function GetSharedAppearanceItems(itemId)
     return nil
 end
 
+-- Check if any item with the same display ID is collected
+-- Returns: hasCollected (bool), collectedItemId (number or nil)
+local function HasCollectedAppearanceByDisplayId(itemId)
+    if not CLIENT_ITEM_CACHE.isReady then
+        return false, nil
+    end
+    
+    local displayId = GetDisplayIdForItem(itemId)
+    if not displayId or displayId == 0 then
+        return false, nil
+    end
+    
+    local sharedItems = CLIENT_ITEM_CACHE.byDisplayId[displayId]
+    if not sharedItems then
+        return false, nil
+    end
+    
+    for _, sharedItemId in ipairs(sharedItems) do
+        if IsAppearanceCollected(sharedItemId) then
+            return true, sharedItemId
+        end
+    end
+    
+    return false, nil
+end
+
+-- Check if an appearance is available (either exact item or shared display ID)
+-- Returns: isAvailable (bool), itemIdToUse (number - the collected item ID to use)
+local function IsAppearanceAvailable(itemId)
+    -- First check exact item
+    if IsAppearanceCollected(itemId) then
+        return true, itemId
+    end
+    
+    -- Then check by display ID if setting enabled
+    if IsSettingEnabled("mergeByDisplayId") then
+        local hasShared, collectedItemId = HasCollectedAppearanceByDisplayId(itemId)
+        if hasShared then
+            return true, collectedItemId
+        end
+    end
+    
+    return false, nil
+end
+
 -- Add shared appearance lines to a tooltip for a given itemId
 local function AddSharedAppearanceToTooltip(tooltip, itemId, settingKey)
     if not IsSettingEnabled(settingKey) then
@@ -2029,11 +2074,17 @@ local function CreateItemFrame(parent, index)
                     end
                     
                     -- Determine which item ID to use for transmog
-                    -- If mergeByDisplayId is enabled and frame has a collectedItemId, use that
-                    -- This ensures we use an item the player actually owns
+                    -- Priority: 1) frame.collectedItemId (merge mode), 2) IsAppearanceAvailable check, 3) original itemId
                     local transmogItemId = f.itemId
                     if f.collectedItemId and f.collectedItemId > 0 then
+                        -- Merge mode: use the stored collected item ID
                         transmogItemId = f.collectedItemId
+                    else
+                        -- Non-merge mode: check if we have a shared appearance collected
+                        local isAvailable, availableItemId = IsAppearanceAvailable(f.itemId)
+                        if isAvailable and availableItemId then
+                            transmogItemId = availableItemId
+                        end
                     end
                     
                     -- Let server validate collection status (respects ALLOW_UNCOLLECTED_TRANSMOG setting)
@@ -2114,15 +2165,12 @@ local function CreateItemFrame(parent, index)
                 GameTooltip:AddLine(string.format("Display ID: %d", f.displayId), 0.6, 0.6, 0.6)
             end
             
-            -- Use stored collection status from frame, fallback to global check
-            local isCollected = f.isCollected
-            if isCollected == nil then
-                isCollected = IsAppearanceCollected(f.itemId)
-            end
+            -- Check if appearance is available (exact item or shared display ID)
+            local isAvailable, _ = IsAppearanceAvailable(f.itemId)
             
             -- Grid-specific action hints
             GameTooltip:AddLine(" ")
-            if isCollected then
+            if isAvailable then
                 GameTooltip:AddLine(L["APPLY_APPEARANCE_SHIFT_CLICK"], 0.7, 0.7, 0.7)
             end
             GameTooltip:AddLine(L["PREVIEW_APPEARANCE_CLICK"], 0.7, 0.7, 0.7)
@@ -2248,7 +2296,9 @@ local function SetupItemModel(frame, slotName)
     
     local isCollected = frame.isCollected
     if isCollected == nil then
-        isCollected = IsAppearanceCollected(frame.itemId)
+        -- Check if available via exact item or shared display ID
+        local isAvailable, _ = IsAppearanceAvailable(frame.itemId)
+        isCollected = isAvailable
     end
     if isCollected then
         frame.collectedIcon:Show()
@@ -2277,10 +2327,12 @@ local function UpdateItemFrame(frame, itemData, slotName)
         collectedItemId = itemData.collectedItemId  -- The collected item in the group
     else
         itemId = itemData
-        isCollected = IsAppearanceCollected(itemData)
+        -- Check if available via exact item or shared display ID
+        local isAvailable, availableItemId = IsAppearanceAvailable(itemId)
+        isCollected = isAvailable
         displayId = nil  -- Legacy format has no displayId
         sharedItems = nil
-        collectedItemId = nil
+        collectedItemId = availableItemId  -- Store the collected item ID for transmog
     end
     
     frame.itemId = itemId
@@ -4895,7 +4947,13 @@ local function CreateMainFrame()
             for _, slotName in ipairs(SLOT_ORDER) do
                 local selectedItem = slotSelectedItems[slotName]
                 if selectedItem then
-                    ApplyTransmog(slotName, selectedItem)
+                    -- Check if we need to use a shared display ID item instead
+                    local isAvailable, availableItemId = IsAppearanceAvailable(selectedItem)
+                    local itemIdToApply = selectedItem
+                    if isAvailable and availableItemId then
+                        itemIdToApply = availableItemId
+                    end
+                    ApplyTransmog(slotName, itemIdToApply)
                     appliedCount = appliedCount + 1
                 end
             end
