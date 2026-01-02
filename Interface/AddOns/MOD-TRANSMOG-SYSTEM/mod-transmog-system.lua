@@ -780,7 +780,12 @@ end
 
 -- Check if we have cache for a specific slot
 local function HasSlotCache(slotId)
-    return CLIENT_ITEM_CACHE.bySlot[slotId] and #CLIENT_ITEM_CACHE.bySlot[slotId] > 0
+    local hasItems = CLIENT_ITEM_CACHE.bySlot[slotId] and #CLIENT_ITEM_CACHE.bySlot[slotId] > 0
+    -- SecondaryHand (16) can also use MainHand (15) items
+    if slotId == 16 and not hasItems then
+        hasItems = CLIENT_ITEM_CACHE.bySlot[15] and #CLIENT_ITEM_CACHE.bySlot[15] > 0
+    end
+    return hasItems
 end
 
 -- Check if full cache is ready (all slots loaded)
@@ -793,6 +798,27 @@ end
 local function FilterCachedItemsForSlot(slotId, subclassName, qualityName, collectionFilter)
     local cachedItems = CLIENT_ITEM_CACHE.bySlot[slotId]
     if not cachedItems then
+        cachedItems = {}
+    end
+    
+    -- SecondaryHand (slot 16) should also show MainHand items (slot 15) for transmog
+    -- This allows players to use main hand weapon appearances in off-hand slot
+    if slotId == 16 then  -- SecondaryHand equipSlot
+        local mainHandItems = CLIENT_ITEM_CACHE.bySlot[15]  -- MainHand equipSlot
+        if mainHandItems then
+            -- Combine both tables
+            local combinedItems = {}
+            for _, item in ipairs(cachedItems) do
+                table.insert(combinedItems, item)
+            end
+            for _, item in ipairs(mainHandItems) do
+                table.insert(combinedItems, item)
+            end
+            cachedItems = combinedItems
+        end
+    end
+    
+    if #cachedItems == 0 then
         return {}
     end
     
