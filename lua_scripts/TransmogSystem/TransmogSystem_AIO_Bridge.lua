@@ -2422,9 +2422,10 @@ if ENABLE_AIO_BRIDGE then
                 return 
             end
             
-            local tGUID = target:GetGUID()
-            if not tGUID then
-                MirrorDebug("[Mirror Image] ERROR: Could not get GUID from target")
+            -- Use pcall since creature may have despawned
+            local success, tGUID = pcall(function() return target:GetGUID() end)
+            if not success or not tGUID then
+                MirrorDebug("[Mirror Image] ERROR: Could not get GUID from target (invalidated)")
                 return
             end
             
@@ -2439,7 +2440,9 @@ if ENABLE_AIO_BRIDGE then
             end
             
             MirrorDebug(string.format("[Mirror Image] Broadcasting packet for GUID %s", tostring(tGUID)))
-            target:SendPacket(MirrorCache[tGUID].PacketStore)
+            
+            -- Protected SendPacket in case creature despawned between checks
+            pcall(function() target:SendPacket(MirrorCache[tGUID].PacketStore) end)
         end
         
         -- ========================================
@@ -2663,6 +2666,56 @@ if ENABLE_AIO_BRIDGE then
         end
         
         RegisterPlayerEvent(4, OnPlayerLogoutMirror)
+        
+        -- Player login - send packets for any nearby Mirror Images
+        -- This handles the case where a player logs in next to existing clones
+        -- (LOS event doesn't fire if already in range)
+        local function OnPlayerLoginMirror(event, player)
+            if not player then return end
+            
+            -- Store player info to retrieve fresh reference in callback
+            local playerName = player:GetName()
+            
+            -- Delay to ensure player is fully loaded in world (needs longer delay for grid visibility)
+            CreateLuaEvent(function()
+                -- Get fresh player reference
+                local p = GetPlayerByName(playerName)
+                if not p then return end
+                
+                -- Check player is in world (protected)
+                local success, inWorld = pcall(function() return p:IsInWorld() end)
+                if not success or not inWorld then return end
+                
+                local playerGUID = p:GetGUID()
+                local playerMap = p:GetMapId()
+                local px, py, pz = p:GetX(), p:GetY(), p:GetZ()
+                
+                MirrorDebug(string.format("[Mirror Image] Login check for %s at map %d (%.1f, %.1f, %.1f)", 
+                    playerName, playerMap, px, py, pz))
+                
+                -- Iterate through all cached Mirror Images
+                local sentCount = 0
+                for creatureGUID, cache in pairs(MirrorCache) do
+                    if cache and cache.PacketStore and not cache.PlayerCache[playerGUID] then
+                        -- We have a cached mirror image that this player hasn't seen
+                        -- Send the packet - client will handle if creature is in range
+                        cache.PlayerCache[playerGUID] = true
+                        p:SendPacket(cache.PacketStore)
+                        sentCount = sentCount + 1
+                        MirrorDebug(string.format("[Mirror Image] Login: Sent packet for GUID %s to %s", 
+                            tostring(creatureGUID), playerName))
+                    end
+                end
+                
+                if sentCount > 0 then
+                    MirrorDebug(string.format("[Mirror Image] Login: Sent %d packets to %s", sentCount, playerName))
+                else
+                    MirrorDebug(string.format("[Mirror Image] Login: No unseen Mirror Images for %s", playerName))
+                end
+            end, 1500, 1)  -- 1.5s delay for full world/grid load
+        end
+        
+        RegisterPlayerEvent(3, OnPlayerLoginMirror)  -- PLAYER_EVENT_ON_LOGIN = 3
         
         -- Register creature events
         MirrorDebug("[Mirror Image] Registering creature events for entry " .. MIRROR_IMAGE_ENTRY)
