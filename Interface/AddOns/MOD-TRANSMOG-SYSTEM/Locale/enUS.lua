@@ -81,7 +81,7 @@ L["SEARCH"] = "Search"
 L["SEARCH_TOOLTIP"] = "Search Options:"
 L["SEARCH_CLEAR"] = "Clear"
 L["SEARCH_NAME"] = "Name"
-L["SEARCH_NAME_DESCRIPTION"] = ": Enter item name (english)" -- (for other locale (english or LOCALE USED))
+L["SEARCH_NAME_DESCRIPTION"] = ": Enter item name (english)" -- (for other locale (only their LOCALE USED))
 L["SEARCH_ID"] = "ID"
 L["SEARCH_ID_DESCRIPTION"] = ": Enter item ID"
 L["SEARCH_DISPLAYID"] = "DisplayID"
@@ -261,3 +261,8 @@ L["COPY_PLAYER_PROMPT"] = "Enter player name to copy appearance\n(or target a pl
 L["COPY"] = "Copy"
 L["COPY_PLAYER_SUCCESS"] = "|cff00ff00[Transmog]|r Copied %d items from %s's appearance."
 L["COPY_PLAYER_HINT"] = "|cff00ff00[Transmog]|r Use the Save button to save this as a set."
+
+-- Merge by Display ID feature
+L["SETTING_MERGE_BY_DISPLAY_ID"] = "Merge items by appearance (Display ID)"
+L["SHARED_APPEARANCE"] = "|cffFFD700Appearance shared on items:|r"
+L["SETTING_SHOW_SHARED_APPEARANCE"] = "Show shared appearances in tooltips"

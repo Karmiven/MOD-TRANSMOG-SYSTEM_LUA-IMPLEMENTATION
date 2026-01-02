@@ -261,3 +261,8 @@ L["COPY_PLAYER_PROMPT"] = "Entrez le nom du joueur à copier\n(ou ciblez d'abord
 L["COPY"] = "Copier"
 L["COPY_PLAYER_SUCCESS"] = "|cff00ff00[Transmog]|r %d objets copiés depuis l'apparence de %s."
 L["COPY_PLAYER_HINT"] = "|cff00ff00[Transmog]|r Utilisez le bouton Sauver pour enregistrer celui-ci comme ensemble."
+
+-- Merge by Display ID feature
+L["SETTING_MERGE_BY_DISPLAY_ID"] = "Fusionner les objets par apparence (Display ID)"
+L["SHARED_APPEARANCE"] = "|cffFFD700Apparence partagée sur les objets :|r"
+L["SETTING_SHOW_SHARED_APPEARANCE"] = "Afficher les apparences partagées dans les infobulles"

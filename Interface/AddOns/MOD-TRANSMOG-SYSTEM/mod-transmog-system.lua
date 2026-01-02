@@ -61,6 +61,12 @@ local function InitializeSettings()
     if TransmogSettings.account.hideHairOnTabardPreview == nil then
         TransmogSettings.account.hideHairOnTabardPreview = true
     end
+    if TransmogSettings.account.mergeByDisplayId == nil then
+        TransmogSettings.account.mergeByDisplayId = true
+    end
+    if TransmogSettings.account.showSharedAppearanceTooltip == nil then
+        TransmogSettings.account.showSharedAppearanceTooltip = true
+    end
     
     -- Character-specific defaults (keyed by character name-realm)
     TransmogSettings.characters = TransmogSettings.characters or {}
@@ -267,6 +273,7 @@ local CLIENT_ITEM_CACHE = {
     version = 0,              -- Cache version from server (0 = no cache)
     isReady = false,          -- Flag indicating cache is loaded
     bySlot = {},              -- Items indexed by slot: bySlot[slotId] = { {itemId, class, subclass, quality, displayId}, ... }
+    byDisplayId = {},         -- Items indexed by displayId: byDisplayId[displayId] = { itemId1, itemId2, ... }
     enchants = {},            -- All enchant visuals with version
     enchantVersion = 0,       -- Enchant cache version
 }
@@ -377,11 +384,23 @@ local function LoadCacheFromSavedVariables()
             CLIENT_ITEM_CACHE.isReady = (CLIENT_ITEM_CACHE.version > 0)
             
             if CLIENT_ITEM_CACHE.isReady then
+                -- Build byDisplayId index for display ID merging feature
+                CLIENT_ITEM_CACHE.byDisplayId = {}
                 local slotCount = 0
                 local itemCount = 0
                 for slotId, items in pairs(CLIENT_ITEM_CACHE.bySlot) do
                     slotCount = slotCount + 1
-                    itemCount = itemCount + #items
+                    for _, itemData in ipairs(items) do
+                        itemCount = itemCount + 1
+                        local itemId = itemData[1]
+                        local displayId = itemData[5]
+                        if displayId and displayId > 0 then
+                            if not CLIENT_ITEM_CACHE.byDisplayId[displayId] then
+                                CLIENT_ITEM_CACHE.byDisplayId[displayId] = {}
+                            end
+                            table.insert(CLIENT_ITEM_CACHE.byDisplayId[displayId], itemId)
+                        end
+                    end
                 end
                 print(string.format("[Transmog] Loaded item cache from SavedVariables: version=%d, %d slots, %d items, %d enchants",
                     CLIENT_ITEM_CACHE.version, slotCount, itemCount, #CLIENT_ITEM_CACHE.enchants))
@@ -549,6 +568,81 @@ local function GetCollectionCount()
     return count
 end
 
+-- Get display ID for an item from cache
+local function GetDisplayIdForItem(itemId)
+    if CLIENT_ITEM_CACHE.isReady then
+        for slotId, items in pairs(CLIENT_ITEM_CACHE.bySlot) do
+            for _, itemData in ipairs(items) do
+                if itemData[1] == itemId then
+                    return itemData[5]  -- displayId is at index 5
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Get all items sharing the same display ID
+local function GetSharedAppearanceItems(itemId)
+    if not CLIENT_ITEM_CACHE.isReady then
+        return nil
+    end
+    
+    local displayId = GetDisplayIdForItem(itemId)
+    if not displayId or displayId == 0 then
+        return nil
+    end
+    
+    local sharedItems = CLIENT_ITEM_CACHE.byDisplayId[displayId]
+    if sharedItems and #sharedItems > 1 then
+        return sharedItems
+    end
+    
+    return nil
+end
+
+-- Add shared appearance lines to a tooltip for a given itemId
+local function AddSharedAppearanceToTooltip(tooltip, itemId, settingKey)
+    if not IsSettingEnabled(settingKey) then
+        return
+    end
+    
+    local sharedItems = GetSharedAppearanceItems(itemId)
+    if not sharedItems or #sharedItems <= 1 then
+        return
+    end
+    
+    tooltip:AddLine(" ")
+    tooltip:AddLine(L["SHARED_APPEARANCE"] or "|cffFFD700Appearance shared on items:|r")
+    
+    for _, sharedItemId in ipairs(sharedItems) do
+        local itemName, _, itemQuality = GetItemInfo(sharedItemId)
+        local isItemCollected = IsAppearanceCollected(sharedItemId)
+        
+        if itemName then
+            if isItemCollected then
+                -- Use quality color for collected items
+                local color = ITEM_QUALITY_COLORS[itemQuality or 1]
+                if color then
+                    tooltip:AddLine(string.format("  %s", itemName), color.r, color.g, color.b)
+                else
+                    tooltip:AddLine(string.format("  %s", itemName), 1, 1, 1)
+                end
+            else
+                -- Grey for uncollected items
+                tooltip:AddLine(string.format("  %s", itemName), 0.5, 0.5, 0.5)
+            end
+        else
+            -- Item info not loaded yet, show item ID
+            if isItemCollected then
+                tooltip:AddLine(string.format("  [Item %d]", sharedItemId), 0.7, 0.7, 0.7)
+            else
+                tooltip:AddLine(string.format("  [Item %d]", sharedItemId), 0.4, 0.4, 0.4)
+            end
+        end
+    end
+end
+
 local function RequestCollectionFromServer()
     AIO.Msg():Add("TRANSMOG", "RequestCollection"):Send()
 end
@@ -657,6 +751,9 @@ local function FilterCachedItemsForSlot(slotId, subclassName, qualityName, colle
         return {}
     end
     
+    -- Check if merge by display ID is enabled
+    local mergeByDisplayId = GetSetting("mergeByDisplayId") == true
+    
     -- Determine subclass filter
     local filterClass, filterSubclass
     if subclassName and subclassName ~= "" and subclassName ~= "All" then
@@ -679,60 +776,150 @@ local function FilterCachedItemsForSlot(slotId, subclassName, qualityName, colle
     local showCollected = (collectionFilter == "All" or collectionFilter == "Collected")
     local showUncollected = (collectionFilter == "All" or collectionFilter == "Uncollected")
     
-    -- Filter items
-    local collectedItems = {}
-    local uncollectedItems = {}
+    -- Helper function to check if an item is collected
+    local function IsItemCollected(itemId)
+        if collectedAppearances[itemId] == true then
+            return true
+        end
+        if TransmogDB and TransmogDB.collection and TransmogDB.collection[itemId] == true then
+            collectedAppearances[itemId] = true
+            return true
+        end
+        return false
+    end
     
-    for _, itemData in ipairs(cachedItems) do
-        -- itemData format: {itemId, class, subclass, quality, displayId}
-        local itemId = itemData[1]
-        local itemClass = itemData[2]
-        local itemSubclass = itemData[3]
-        local itemQuality = itemData[4]
-        local displayId = itemData[5]
+    if mergeByDisplayId then
+        -- MERGE MODE: Group items by display ID
+        local displayIdGroups = {}  -- displayId -> { items = {itemId1, itemId2, ...}, quality = quality, hasCollected = bool, collectedItemId = itemId }
+        local displayIdOrder = {}   -- Track order of first appearance
         
-        -- Apply subclass filter
-        local passSubclass = true
-        if filterClass and filterSubclass then
-            passSubclass = (itemClass == filterClass and itemSubclass == filterSubclass)
-        end
-        
-        -- Apply quality filter
-        local passQuality = true
-        if filterQuality then
-            passQuality = (itemQuality == filterQuality)
-        end
-        
-        -- Check collection status (use runtime cache, fallback to SavedVariables)
-        local isCollected = collectedAppearances[itemId] == true
-        if not isCollected and TransmogDB and TransmogDB.collection then
-            isCollected = TransmogDB.collection[itemId] == true
-            -- Sync to runtime cache if found in SavedVariables
-            if isCollected then
-                collectedAppearances[itemId] = true
+        for _, itemData in ipairs(cachedItems) do
+            local itemId = itemData[1]
+            local itemClass = itemData[2]
+            local itemSubclass = itemData[3]
+            local itemQuality = itemData[4]
+            local displayId = itemData[5]
+            
+            -- Apply subclass filter
+            local passSubclass = true
+            if filterClass and filterSubclass then
+                passSubclass = (itemClass == filterClass and itemSubclass == filterSubclass)
+            end
+            
+            -- Apply quality filter
+            local passQuality = true
+            if filterQuality then
+                passQuality = (itemQuality == filterQuality)
+            end
+            
+            if passSubclass and passQuality and displayId and displayId > 0 then
+                if not displayIdGroups[displayId] then
+                    displayIdGroups[displayId] = {
+                        items = {},
+                        quality = itemQuality,
+                        hasCollected = false,
+                        collectedItemId = nil,
+                        representativeItemId = itemId,
+                    }
+                    table.insert(displayIdOrder, displayId)
+                end
+                
+                local group = displayIdGroups[displayId]
+                table.insert(group.items, itemId)
+                
+                -- Check if this item is collected
+                local isCollected = IsItemCollected(itemId)
+                if isCollected then
+                    group.hasCollected = true
+                    -- Use first collected item as representative
+                    if not group.collectedItemId then
+                        group.collectedItemId = itemId
+                        group.representativeItemId = itemId
+                    end
+                end
             end
         end
         
-        -- Apply all filters
-        if passSubclass and passQuality then
+        -- Build result: collected first, then uncollected
+        local collectedItems = {}
+        local uncollectedItems = {}
+        
+        for _, displayId in ipairs(displayIdOrder) do
+            local group = displayIdGroups[displayId]
+            local isCollected = group.hasCollected
+            
+            local item = {
+                itemId = group.representativeItemId,
+                collected = isCollected,
+                displayId = displayId,
+                sharedItems = group.items,  -- All items sharing this display ID
+                collectedItemId = group.collectedItemId,  -- The collected item if any
+            }
+            
             if isCollected and showCollected then
-                table.insert(collectedItems, { itemId = itemId, collected = true, displayId = displayId })
+                table.insert(collectedItems, item)
             elseif not isCollected and showUncollected then
-                table.insert(uncollectedItems, { itemId = itemId, collected = false, displayId = displayId })
+                table.insert(uncollectedItems, item)
             end
         end
+        
+        -- Combine: collected first, then uncollected
+        local result = {}
+        for _, item in ipairs(collectedItems) do
+            table.insert(result, item)
+        end
+        for _, item in ipairs(uncollectedItems) do
+            table.insert(result, item)
+        end
+        
+        return result
+    else
+        -- NORMAL MODE: Each item is separate
+        local collectedItems = {}
+        local uncollectedItems = {}
+        
+        for _, itemData in ipairs(cachedItems) do
+            local itemId = itemData[1]
+            local itemClass = itemData[2]
+            local itemSubclass = itemData[3]
+            local itemQuality = itemData[4]
+            local displayId = itemData[5]
+            
+            -- Apply subclass filter
+            local passSubclass = true
+            if filterClass and filterSubclass then
+                passSubclass = (itemClass == filterClass and itemSubclass == filterSubclass)
+            end
+            
+            -- Apply quality filter
+            local passQuality = true
+            if filterQuality then
+                passQuality = (itemQuality == filterQuality)
+            end
+            
+            local isCollected = IsItemCollected(itemId)
+            
+            -- Apply all filters
+            if passSubclass and passQuality then
+                if isCollected and showCollected then
+                    table.insert(collectedItems, { itemId = itemId, collected = true, displayId = displayId })
+                elseif not isCollected and showUncollected then
+                    table.insert(uncollectedItems, { itemId = itemId, collected = false, displayId = displayId })
+                end
+            end
+        end
+        
+        -- Combine: collected first, then uncollected
+        local result = {}
+        for _, item in ipairs(collectedItems) do
+            table.insert(result, item)
+        end
+        for _, item in ipairs(uncollectedItems) do
+            table.insert(result, item)
+        end
+        
+        return result
     end
-    
-    -- Combine: collected first, then uncollected (matching server behavior)
-    local result = {}
-    for _, item in ipairs(collectedItems) do
-        table.insert(result, item)
-    end
-    for _, item in ipairs(uncollectedItems) do
-        table.insert(result, item)
-    end
-    
-    return result
 end
 
 -- Get items for slot using local cache with filtering
@@ -876,12 +1063,23 @@ TRANSMOG_HANDLER.FullCacheData = function(player, data)
         CLIENT_ITEM_CACHE.isReady = true
         pendingFullCacheRequest = false
         
-        -- Count items
+        -- Build byDisplayId index for display ID merging feature
+        CLIENT_ITEM_CACHE.byDisplayId = {}
         local totalItems = 0
         local slotCount = 0
         for slotId, items in pairs(fullCacheBuffer) do
             slotCount = slotCount + 1
-            totalItems = totalItems + #items
+            for _, itemData in ipairs(items) do
+                totalItems = totalItems + 1
+                local itemId = itemData[1]
+                local displayId = itemData[5]
+                if displayId and displayId > 0 then
+                    if not CLIENT_ITEM_CACHE.byDisplayId[displayId] then
+                        CLIENT_ITEM_CACHE.byDisplayId[displayId] = {}
+                    end
+                    table.insert(CLIENT_ITEM_CACHE.byDisplayId[displayId], itemId)
+                end
+            end
         end
         
         print(string.format("[Transmog] Full cache complete: %d items across %d slots (version %d)", 
@@ -1423,8 +1621,11 @@ local function GetActiveTransmog(slotName)
 end
 
 -- ============================================================================
--- Tooltip Hook - Server-driven eligibility
+-- Tooltip Hook - Server-driven eligibility with deduplication
 -- ============================================================================
+
+-- Track which tooltips have already been processed for which item to avoid duplicates
+local tooltipProcessedItem = {}
 
 local function OnTooltipSetItem(tooltip)
     local _, link = tooltip:GetItem()
@@ -1432,6 +1633,13 @@ local function OnTooltipSetItem(tooltip)
     
     local itemId = tonumber(link:match("item:(%d+)"))
     if not itemId then return end
+    
+    -- Deduplication: check if we already processed this exact item on this tooltip
+    local tooltipName = tooltip:GetName() or tostring(tooltip)
+    if tooltipProcessedItem[tooltipName] == itemId then
+        return  -- Already added our lines, skip
+    end
+    tooltipProcessedItem[tooltipName] = itemId
     
     -- Check cache first
     local cached = appearanceCache[itemId]
@@ -1446,6 +1654,8 @@ local function OnTooltipSetItem(tooltip)
                 tooltip:AddLine(L["NEW_APPEARANCE"])
             end
         end
+        -- Add shared appearance info
+        AddSharedAppearanceToTooltip(tooltip, itemId, "showSharedAppearanceTooltip")
         tooltip:Show()
         return
     end
@@ -1454,14 +1664,16 @@ local function OnTooltipSetItem(tooltip)
     if IsAppearanceCollected(itemId) then
         if IsSettingEnabled("showCollectedTooltip") then
             tooltip:AddLine(L["APPEARANCE_COLLECTED"])
-            tooltip:Show()
         end
     else
         if IsSettingEnabled("showNewAppearanceTooltip") then
             tooltip:AddLine(L["NEW_APPEARANCE"])
-            tooltip:Show()
         end
     end
+    
+    -- Add shared appearance info
+    AddSharedAppearanceToTooltip(tooltip, itemId, "showSharedAppearanceTooltip")
+    tooltip:Show()
     
     -- Not in cache - ask server (only once per item per session)
     if not pendingTooltipChecks[itemId] then
@@ -1470,16 +1682,27 @@ local function OnTooltipSetItem(tooltip)
     end
 end
 
+-- Clear deduplication tracking when tooltip is hidden
+local function OnTooltipCleared(tooltip)
+    local tooltipName = tooltip:GetName() or tostring(tooltip)
+    tooltipProcessedItem[tooltipName] = nil
+end
+
 GameTooltip:HookScript("OnTooltipSetItem", OnTooltipSetItem)
+GameTooltip:HookScript("OnTooltipCleared", OnTooltipCleared)
 ItemRefTooltip:HookScript("OnTooltipSetItem", OnTooltipSetItem)
+ItemRefTooltip:HookScript("OnTooltipCleared", OnTooltipCleared)
 ShoppingTooltip1:HookScript("OnTooltipSetItem", OnTooltipSetItem)
+ShoppingTooltip1:HookScript("OnTooltipCleared", OnTooltipCleared)
 ShoppingTooltip2:HookScript("OnTooltipSetItem", OnTooltipSetItem)
+ShoppingTooltip2:HookScript("OnTooltipCleared", OnTooltipCleared)
 
 -- Hook AtlasLoot tooltips if available (delayed to ensure addon is loaded)
 local function HookAtlasLootTooltips()
     -- AtlasLoot uses AtlasLootTooltip
     if AtlasLootTooltip then
         AtlasLootTooltip:HookScript("OnTooltipSetItem", OnTooltipSetItem)
+        AtlasLootTooltip:HookScript("OnTooltipCleared", OnTooltipCleared)
     end
     -- Some versions use GameTooltip but we already hooked that
 end
@@ -1805,8 +2028,16 @@ local function CreateItemFrame(parent, index)
                         end
                     end
                     
+                    -- Determine which item ID to use for transmog
+                    -- If mergeByDisplayId is enabled and frame has a collectedItemId, use that
+                    -- This ensures we use an item the player actually owns
+                    local transmogItemId = f.itemId
+                    if f.collectedItemId and f.collectedItemId > 0 then
+                        transmogItemId = f.collectedItemId
+                    end
+                    
                     -- Let server validate collection status (respects ALLOW_UNCOLLECTED_TRANSMOG setting)
-                    ApplyTransmog(currentSlot, f.itemId)
+                    ApplyTransmog(currentSlot, transmogItemId)
                 else
                     -- Clear previous selection for this slot from ALL item frames
                     for _, itemFrame in ipairs(itemFrames) do
@@ -1889,18 +2120,10 @@ local function CreateItemFrame(parent, index)
                 isCollected = IsAppearanceCollected(f.itemId)
             end
             
-            -- Show collection status (if enabled)
+            -- Grid-specific action hints
+            GameTooltip:AddLine(" ")
             if isCollected then
-                if IsSettingEnabled("showCollectedTooltip") then
-                    GameTooltip:AddLine(" ")
-                    GameTooltip:AddLine(L["APPEARANCE_COLLECTED"])
-                end
                 GameTooltip:AddLine(L["APPLY_APPEARANCE_SHIFT_CLICK"], 0.7, 0.7, 0.7)
-            else
-                if IsSettingEnabled("showNewAppearanceTooltip") then
-                    GameTooltip:AddLine(" ")
-                    GameTooltip:AddLine(L["NEW_APPEARANCE"])
-                end
             end
             GameTooltip:AddLine(L["PREVIEW_APPEARANCE_CLICK"], 0.7, 0.7, 0.7)
             
@@ -2045,20 +2268,26 @@ end
 
 local function UpdateItemFrame(frame, itemData, slotName)
     -- Handle both old format (just itemId) and new format (table with itemId, collected, displayId)
-    local itemId, isCollected, displayId
+    local itemId, isCollected, displayId, sharedItems, collectedItemId
     if type(itemData) == "table" then
         itemId = itemData.itemId
         isCollected = itemData.collected
         displayId = itemData.displayId
+        sharedItems = itemData.sharedItems  -- For mergeByDisplayId mode
+        collectedItemId = itemData.collectedItemId  -- The collected item in the group
     else
         itemId = itemData
         isCollected = IsAppearanceCollected(itemData)
         displayId = nil  -- Legacy format has no displayId
+        sharedItems = nil
+        collectedItemId = nil
     end
     
     frame.itemId = itemId
     frame.displayId = displayId  -- Store displayId for tooltip
     frame.isCollected = isCollected
+    frame.sharedItems = sharedItems  -- Store for tooltip display
+    frame.collectedItemId = collectedItemId  -- Store for transmog application
     frame.isLoaded = false
     frame.model:SetScript("OnUpdateModel", nil)
     frame.collectedIcon:Hide()
@@ -3855,6 +4084,7 @@ local function CreateSettingsPanel(parent)
     CreateCheckbox(L["SETTING_SHOW_DISPLAY_ID"] or "Show Display ID in tooltip", "showDisplayIdTooltip", false)
     CreateCheckbox(L["SETTING_SHOW_COLLECTED"] or 'Show "Appearance Collected" in tooltip', "showCollectedTooltip", false)
     CreateCheckbox(L["SETTING_SHOW_NEW"] or 'Show "New Appearance" in tooltip', "showNewAppearanceTooltip", false)
+    CreateCheckbox(L["SETTING_SHOW_SHARED_APPEARANCE"] or "Show shared appearances in tooltips", "showSharedAppearanceTooltip", false)
     
     -- ========================================
     -- SECTION: Grid Preview Settings
@@ -3867,6 +4097,7 @@ local function CreateSettingsPanel(parent)
     CreateCheckbox(L["SETTING_HIDE_HAIR_CHEST"] or "Hide hair/beard on Chest slot preview", "hideHairOnChestPreview", false)
     CreateCheckbox(L["SETTING_HIDE_HAIR_SHIRT"] or "Hide hair/beard on Shirt slot preview", "hideHairOnShirtPreview", false)
     CreateCheckbox(L["SETTING_HIDE_HAIR_TABARD"] or "Hide hair/beard on Tabard slot preview", "hideHairOnTabardPreview", false)
+    CreateCheckbox(L["SETTING_MERGE_BY_DISPLAY_ID"] or "Merge items by appearance (Display ID)", "mergeByDisplayId", false)
     
     -- ========================================
     -- SECTION: Info
@@ -4164,9 +4395,10 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
                 
                 -- Enable tooltip
                 iconFrame:EnableMouse(true)
+                iconFrame.itemId = itemId  -- Store itemId for tooltip
                 iconFrame:SetScript("OnEnter", function(self)
                     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-                    GameTooltip:SetHyperlink("item:" .. itemId)
+                    GameTooltip:SetHyperlink("item:" .. self.itemId)
                     GameTooltip:Show()
                 end)
                 iconFrame:SetScript("OnLeave", GameTooltip_Hide)

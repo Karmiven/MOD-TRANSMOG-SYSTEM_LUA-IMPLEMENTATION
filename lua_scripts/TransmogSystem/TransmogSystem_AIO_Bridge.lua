@@ -1,5 +1,5 @@
 -- [Author : Thiesant] This script is free, if you bought it you got scammed.
--- v0.6
+-- v0.7
     -- ============================================================================
 
 -- ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -93,6 +93,13 @@ local ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL = true
 -- When false (default), players must have the item in their collection to use it
 local ALLOW_UNCOLLECTED_TRANSMOG = false
 
+-- ALLOW_DISPLAY_ID_TRANSMOG
+-- Set to true to allow players to apply transmog based on display ID instead of item ID
+-- When true, if a player requests transmog for item A with display ID X, the server will
+-- accept if the player has ANY item with display ID X in their collection
+-- This is useful for sharing sets between players who may have different items with same appearance
+-- When false (default), players must have the exact item ID in their collection
+local ALLOW_DISPLAY_ID_TRANSMOG = true
 
 -- ───────────────────────────────── MIRROR IMAGE ─────────────────────────────────
 
@@ -462,6 +469,36 @@ if ENABLE_AIO_BRIDGE then
                 callback(Q ~= nil)
             end
         )
+    end
+    
+    -- Check if player has ANY item with the same display ID in their collection
+    -- This enables display ID based transmog application
+    local function HasAppearanceByDisplayIdAsync(accountId, displayId, callback)
+        -- Query joins collection with item_template to find any collected item with matching displayId
+        CharDBQueryAsync(
+            string.format(
+                "SELECT c.item_id FROM mod_transmog_system_collection c " ..
+                "INNER JOIN world.item_template it ON c.item_id = it.entry " ..
+                "WHERE c.account_id = %d AND it.displayid = %d LIMIT 1",
+                accountId, displayId
+            ),
+            function(Q)
+                if Q then
+                    -- Return the first collected item ID with this display ID
+                    callback(true, Q:GetUInt32(0))
+                else
+                    callback(false, nil)
+                end
+            end
+        )
+    end
+    
+    -- Get display ID for an item from cache
+    local function GetCachedDisplayId(itemId)
+        if SERVER_ITEM_CACHE.isReady and SERVER_ITEM_CACHE.byItemId[itemId] then
+            return SERVER_ITEM_CACHE.byItemId[itemId].displayid
+        end
+        return nil
     end
 
     -- NOTE: Sync versions removed - use async only
@@ -1216,8 +1253,8 @@ if ENABLE_AIO_BRIDGE then
         local playerName = player:GetName()  -- Store name for callback
         
         -- Debug: log the check
-        DebugPrint(string.format("[Transmog] ApplyTransmog: player=%s, slot=%d, item=%d, ALLOW_UNCOLLECTED=%s", 
-            playerName, slotId, itemId, tostring(ALLOW_UNCOLLECTED_TRANSMOG)))
+        DebugPrint(string.format("[Transmog] ApplyTransmog: player=%s, slot=%d, item=%d, ALLOW_UNCOLLECTED=%s, ALLOW_DISPLAY_ID=%s", 
+            playerName, slotId, itemId, tostring(ALLOW_UNCOLLECTED_TRANSMOG), tostring(ALLOW_DISPLAY_ID_TRANSMOG)))
         
         -- If ALLOW_UNCOLLECTED_TRANSMOG is true, skip collection check
         if ALLOW_UNCOLLECTED_TRANSMOG then
@@ -1242,16 +1279,10 @@ if ENABLE_AIO_BRIDGE then
             return
         end
         
-        -- Verify player has the appearance (async)
-        HasAppearanceAsync(accountId, itemId, function(hasItem)
-            if not hasItem then
-                DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: item %d not in collection for account %d", itemId, accountId))
-                SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Error", "APPEARANCE_NOT_COLLECTED"))
-                return
-            end
-            
+        -- Helper function to apply transmog after validation
+        local function DoApplyTransmog(finalItemId)
             -- Save to database (always - even if no item equipped)
-            SaveActiveTransmog(guid, slotId, itemId)
+            SaveActiveTransmog(guid, slotId, finalItemId)
             
             -- Get fresh player reference (they may have disconnected during async)
             local onlinePlayer = GetPlayerByName(playerName)
@@ -1261,13 +1292,49 @@ if ENABLE_AIO_BRIDGE then
                 if equippedItem then
                     if ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
                         -- Apply visual only if item is equipped
-                        ApplyTransmogVisual(onlinePlayer, slotId, itemId)
+                        ApplyTransmogVisual(onlinePlayer, slotId, finalItemId)
                     end
                 end
             end
             
             -- Always report success since it's saved in mod_transmog_system_active DB even for empty slot
-            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Applied", { slot = slotId, itemId = itemId }))
+            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Applied", { slot = slotId, itemId = finalItemId }))
+        end
+        
+        -- Verify player has the appearance (async)
+        HasAppearanceAsync(accountId, itemId, function(hasItem)
+            if hasItem then
+                -- Player has the exact item, use it
+                DoApplyTransmog(itemId)
+                return
+            end
+            
+            -- Player doesn't have the exact item
+            -- Check if display ID based transmog is allowed
+            if ALLOW_DISPLAY_ID_TRANSMOG then
+                -- Get the display ID for the requested item
+                local displayId = GetCachedDisplayId(itemId)
+                if displayId and displayId > 0 then
+                    -- Check if player has ANY item with the same display ID
+                    HasAppearanceByDisplayIdAsync(accountId, displayId, function(hasDisplayId, collectedItemId)
+                        if hasDisplayId and collectedItemId then
+                            DebugPrint(string.format("[Transmog] ApplyTransmog: using collected item %d (same display ID %d) instead of requested %d", 
+                                collectedItemId, displayId, itemId))
+                            DoApplyTransmog(collectedItemId)
+                        else
+                            DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: no item with display ID %d in collection for account %d", displayId, accountId))
+                            SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Error", "APPEARANCE_NOT_COLLECTED"))
+                        end
+                    end)
+                else
+                    -- Couldn't get display ID, fall back to error
+                    DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: item %d not in collection and no display ID found for account %d", itemId, accountId))
+                    SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Error", "APPEARANCE_NOT_COLLECTED"))
+                end
+            else
+                DebugPrint(string.format("[Transmog] ApplyTransmog BLOCKED: item %d not in collection for account %d", itemId, accountId))
+                SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "Error", "APPEARANCE_NOT_COLLECTED"))
+            end
         end)
     end
     
@@ -1638,6 +1705,20 @@ if ENABLE_AIO_BRIDGE then
                     collectionSet[itemId] = true
                 end
                 
+                -- Build display ID to collected item map for ALLOW_DISPLAY_ID_TRANSMOG
+                local displayIdToCollectedItem = {}
+                if ALLOW_DISPLAY_ID_TRANSMOG then
+                    for _, collectedItemId in ipairs(collectionList) do
+                        local itemTemplate = GetItemTemplate(collectedItemId)
+                        if itemTemplate and itemTemplate.displayid and itemTemplate.displayid > 0 then
+                            -- Only store first collected item per display ID
+                            if not displayIdToCollectedItem[itemTemplate.displayid] then
+                                displayIdToCollectedItem[itemTemplate.displayid] = collectedItemId
+                            end
+                        end
+                    end
+                end
+                
                 -- Get player reference
                 local onlinePlayer = GetPlayerByName(playerName)
                 if not onlinePlayer then
@@ -1651,20 +1732,40 @@ if ENABLE_AIO_BRIDGE then
                 
                 for slot, itemId in pairs(setData.slots) do
                     if itemId and itemId > 0 then
-                        -- Check if player has this appearance in collection (skip if ALLOW_UNCOLLECTED_TRANSMOG)
-                        if ALLOW_UNCOLLECTED_TRANSMOG or collectionSet[itemId] then
+                        local itemIdToUse = nil
+                        
+                        -- Check if player has this exact item in collection
+                        if ALLOW_UNCOLLECTED_TRANSMOG then
+                            itemIdToUse = itemId
+                        elseif collectionSet[itemId] then
+                            itemIdToUse = itemId
+                        elseif ALLOW_DISPLAY_ID_TRANSMOG then
+                            -- Player doesn't have exact item, check by display ID
+                            local requestedItemTemplate = GetItemTemplate(itemId)
+                            if requestedItemTemplate and requestedItemTemplate.displayid and requestedItemTemplate.displayid > 0 then
+                                local collectedItem = displayIdToCollectedItem[requestedItemTemplate.displayid]
+                                if collectedItem then
+                                    itemIdToUse = collectedItem
+                                    DebugPrint(string.format("[Transmog] ApplySet: Using collected item %d (display ID %d) instead of %d for slot %d",
+                                        collectedItem, requestedItemTemplate.displayid, itemId, slot))
+                                end
+                            end
+                        end
+                        
+                        if itemIdToUse then
                             -- Save to active transmogs
-                            SaveActiveTransmog(guid, slot, itemId)
+                            SaveActiveTransmog(guid, slot, itemIdToUse)
                             
                             -- Apply visual if item equipped
                             local equippedItem = onlinePlayer:GetItemByPos(255, slot)
                             if equippedItem and ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
-                                ApplyTransmogVisual(onlinePlayer, slot, itemId)
+                                ApplyTransmogVisual(onlinePlayer, slot, itemIdToUse)
                             end
                             
-                            appliedSlots[slot] = itemId
+                            appliedSlots[slot] = itemIdToUse
                         else
                             skippedCount = skippedCount + 1
+                            DebugPrint(string.format("[Transmog] ApplySet: Skipped slot %d, item %d not in collection", slot, itemId))
                         end
                     end
                 end
