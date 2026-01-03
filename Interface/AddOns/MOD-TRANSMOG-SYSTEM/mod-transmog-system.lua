@@ -1468,8 +1468,7 @@ local function CreateInspectBorderFrame(slotFrame)
     
     local border = CreateFrame("Frame", nil, slotFrame)
     border:SetAllPoints(slotFrame)
-    border:SetFrameStrata("TOOLTIP")  -- Ensure on top
-    border:SetFrameLevel(100)
+    border:SetFrameLevel(slotFrame:GetFrameLevel() + 5)  -- Just above slot, but stays with parent
     
     -- Create border texture
     border.texture = border:CreateTexture(nil, "OVERLAY")
