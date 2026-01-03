@@ -589,10 +589,13 @@ if ENABLE_AIO_BRIDGE then
                 if Q then
                     repeat
                         local slot = Q:GetUInt8(0)
-                        local itemId = Q:GetUInt32(1)
-                        -- itemId = 0 means hidden slot, itemId > 0 means transmog
-                        -- Both are valid and should be loaded
-                        transmogs[slot] = itemId
+                        -- Check if item_id is NULL (IsNull returns true for NULL columns)
+                        -- NULL = no item transmog (enchant-only), 0 = hide, >0 = transmog
+                        if not Q:IsNull(1) then
+                            local itemId = Q:GetUInt32(1)
+                            transmogs[slot] = itemId
+                        end
+                        -- If NULL, we don't add to transmogs table (nil = no item transmog)
                     until not Q:NextRow()
                 end
                 -- Update session cache
@@ -606,21 +609,50 @@ if ENABLE_AIO_BRIDGE then
     end
     
     local function SaveActiveTransmog(guid, slot, itemId)
-        CharDBExecute(string.format(
-            "REPLACE INTO mod_transmog_system_active (guid, slot, item_id) VALUES (%d, %d, %d)",
-            guid, slot, itemId
-        ))
+        -- Preserve existing enchant when saving item transmog
+        local cachedEnchant = GetCachedActiveEnchantTransmogs(guid)
+        local existingEnchant = cachedEnchant[slot]
+        
+        if existingEnchant then
+            -- Preserve enchant
+            CharDBExecute(string.format(
+                "REPLACE INTO mod_transmog_system_active (guid, slot, item_id, enchant_id) VALUES (%d, %d, %d, %d)",
+                guid, slot, itemId, existingEnchant
+            ))
+        else
+            -- No enchant to preserve
+            CharDBExecute(string.format(
+                "REPLACE INTO mod_transmog_system_active (guid, slot, item_id, enchant_id) VALUES (%d, %d, %d, NULL)",
+                guid, slot, itemId
+            ))
+        end
         -- Update cache
         UpdateTransmogCache(guid, slot, itemId)
     end
     
     local function RemoveActiveTransmog(guid, slot)
-        CharDBExecute(string.format(
-            "DELETE FROM mod_transmog_system_active WHERE guid = %d AND slot = %d",
-            guid, slot
-        ))
-        -- Update cache
-        UpdateTransmogCache(guid, slot, nil)
+        -- Check if there's an enchant to preserve
+        local cachedEnchant = GetCachedActiveEnchantTransmogs(guid)
+        local existingEnchant = cachedEnchant[slot]
+        
+        if existingEnchant then
+            -- Preserve enchant, just clear item transmog (set to NULL)
+            CharDBExecute(string.format(
+                "UPDATE mod_transmog_system_active SET item_id = NULL WHERE guid = %d AND slot = %d",
+                guid, slot
+            ))
+            -- Only clear item cache, keep enchant
+            UpdateTransmogCache(guid, slot, nil)
+        else
+            -- No enchant, delete the entire row
+            CharDBExecute(string.format(
+                "DELETE FROM mod_transmog_system_active WHERE guid = %d AND slot = %d",
+                guid, slot
+            ))
+            -- Update cache (both item and enchant since row is deleted)
+            UpdateTransmogCache(guid, slot, nil)
+            UpdateEnchantCache(guid, slot, nil)
+        end
     end
     
     -- ============================================================================
@@ -851,9 +883,10 @@ if ENABLE_AIO_BRIDGE then
     end
     
     -- Get active enchant transmogs async (also updates session cache)
+    -- Only returns slots with enchant transmog applied (enchant_id IS NOT NULL)
     local function GetActiveEnchantTransmogsAsync(guid, callback)
         CharDBQueryAsync(
-            string.format("SELECT slot, enchant_id FROM mod_transmog_system_active WHERE guid = %d AND enchant_id > 0", guid),
+            string.format("SELECT slot, enchant_id FROM mod_transmog_system_active WHERE guid = %d AND enchant_id IS NOT NULL", guid),
             function(Q)
                 local transmogs = {}
                 if Q then
@@ -873,29 +906,47 @@ if ENABLE_AIO_BRIDGE then
         )
     end
     
-    -- Save enchant transmog to database (uses INSERT OR REPLACE pattern)
+    -- Save enchant transmog to database
+    -- Supports enchant-only transmogs by using NULL for item_id when no item transmog exists
+    -- item_id values: NULL = no item transmog, 0 = hide slot, >0 = transmog
     local function SaveEnchantTransmog(guid, slot, enchantId)
-        -- Use REPLACE with all columns to handle both insert and update
-        local currentItemId = 0
         local cached = GetCachedActiveTransmogs(guid)
-        if cached[slot] then
-            currentItemId = cached[slot]
-        end
         
-        CharDBExecute(string.format(
-            "REPLACE INTO mod_transmog_system_active (guid, slot, item_id, enchant_id) VALUES (%d, %d, %d, %d)",
-            guid, slot, currentItemId, enchantId
-        ))
+        if cached[slot] ~= nil then
+            -- Item transmog exists, use REPLACE to preserve item_id
+            CharDBExecute(string.format(
+                "REPLACE INTO mod_transmog_system_active (guid, slot, item_id, enchant_id) VALUES (%d, %d, %d, %d)",
+                guid, slot, cached[slot], enchantId
+            ))
+        else
+            -- No item transmog - insert with NULL item_id (enchant-only)
+            CharDBExecute(string.format(
+                "REPLACE INTO mod_transmog_system_active (guid, slot, item_id, enchant_id) VALUES (%d, %d, NULL, %d)",
+                guid, slot, enchantId
+            ))
+        end
         -- Update cache
         UpdateEnchantCache(guid, slot, enchantId)
     end
     
     -- Remove enchant transmog from database
+    -- If this leaves a row with both NULL item_id and NULL enchant_id, delete the row entirely
     local function RemoveEnchantTransmogFromDB(guid, slot)
-        CharDBExecute(string.format(
-            "UPDATE mod_transmog_system_active SET enchant_id = 0 WHERE guid = %d AND slot = %d",
-            guid, slot
-        ))
+        local cached = GetCachedActiveTransmogs(guid)
+        
+        if cached[slot] ~= nil then
+            -- Has item transmog, just clear the enchant (set to NULL)
+            CharDBExecute(string.format(
+                "UPDATE mod_transmog_system_active SET enchant_id = NULL WHERE guid = %d AND slot = %d",
+                guid, slot
+            ))
+        else
+            -- Enchant-only row (item_id is NULL), delete the entire row to avoid ghost entry
+            CharDBExecute(string.format(
+                "DELETE FROM mod_transmog_system_active WHERE guid = %d AND slot = %d AND item_id IS NULL",
+                guid, slot
+            ))
+        end
         -- Update cache
         UpdateEnchantCache(guid, slot, nil)
     end
@@ -937,6 +988,8 @@ if ENABLE_AIO_BRIDGE then
     end
     
     -- Apply all transmogs for a player (uses session cache)
+    -- NOTE: Slots with NULL item_id (enchant-only) are not in transmogs table,
+    --       so they keep their original item appearance. Only 0 (hide) and >0 (transmog) are applied.
     local function ApplyAllTransmogsFromCache(player)
         if not player then return end
         

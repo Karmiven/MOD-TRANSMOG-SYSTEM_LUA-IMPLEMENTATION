@@ -29,12 +29,19 @@ COMMENT='Account-wide transmog appearance collection';
 -- ============================================================================
 -- mod_transmog_system_active: Active transmog per character per slot
 -- Stores the current fake appearance applied to each equipment slot
+-- item_id values:
+--   NULL = no item transmog (enchant-only, keep original appearance)
+--   0    = hide slot (intentionally invisible)
+--   >0   = transmog to that item's appearance
+-- enchant_id values:
+--   NULL = no enchant transmog (keep original enchant visual)
+--   >0   = enchant visual applied
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS `mod_transmog_system_active` (
     `guid` INT UNSIGNED NOT NULL COMMENT 'Character GUID',
     `slot` TINYINT UNSIGNED NOT NULL COMMENT 'Equipment slot (0-18)',
-    `item_id` INT UNSIGNED NOT NULL COMMENT 'Item entry of the fake appearance',
-    `enchant_id` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Enchant ID from mod_transmog_system_enchantment (0 = none)',
+    `item_id` INT UNSIGNED DEFAULT NULL COMMENT 'Item entry (NULL=none, 0=hidden, >0=transmog)',
+    `enchant_id` INT UNSIGNED DEFAULT NULL COMMENT 'Enchant visual ID (NULL=none, >0=enchant)',
     `apply_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`guid`, `slot`),
     KEY `idx_guid` (`guid`)
@@ -255,4 +262,14 @@ COMMENT='Saved transmog outfit sets';
 -- 172 = Greater Spellpower
 -- 178 = Berserking
 -- 186 = Blade Ward
+-- ============================================================================
+
+-- ============================================================================
+-- MIGRATION: For existing databases installed prior to 0.7, run these to update the schema
+-- This makes item_id and enchant_id nullable to support partial transmogs
+-- ============================================================================
+-- ALTER TABLE `mod_transmog_system_active` MODIFY `item_id` INT UNSIGNED DEFAULT NULL COMMENT 'Item entry (NULL=none, 0=hidden, >0=transmog)';
+-- ALTER TABLE `mod_transmog_system_active` MODIFY `enchant_id` INT UNSIGNED DEFAULT NULL COMMENT 'Enchant visual ID (NULL=none, >0=enchant)';
+-- UPDATE `mod_transmog_system_active` SET `enchant_id` = NULL WHERE `enchant_id` = 0;
+-- UPDATE `mod_transmog_system_active` SET `item_id` = NULL WHERE `item_id` = 0 AND `slot` IN (15, 16, 17);
 -- ============================================================================
