@@ -3071,7 +3071,7 @@ end
 
 local function CreateSubclassDropdown(parent)
     local dropdown = CreateFrame("Frame", "TransmogSubclassDropdown", parent, "UIDropDownMenuTemplate")
-    dropdown:SetPoint("TOPLEFT", 320, -25)
+    dropdown:SetPoint("TOPLEFT", 350, -25)
     UIDropDownMenu_SetWidth(dropdown, 150)
     UIDropDownMenu_SetText(dropdown, currentSubclass)
     return dropdown
@@ -3915,11 +3915,11 @@ local function CreateSetControls(parent, dressingRoomFrame)
     
     -- Set dropdown
     setDropdown = CreateSetDropdown(container)
-    setDropdown:SetPoint("LEFT", container, "LEFT", -10, 0)
+    setDropdown:SetPoint("LEFT", container, "LEFT", -50, -5)
     
     -- Save button
     local saveBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    saveBtn:SetSize(45, 22)
+    saveBtn:SetSize(60, 22)
     saveBtn:SetPoint("LEFT", setDropdown, "RIGHT", -5, 2)
     saveBtn:SetText(L["SET_SAVE"] or "Save")
     saveBtn:SetScript("OnClick", function()
@@ -3948,7 +3948,7 @@ local function CreateSetControls(parent, dressingRoomFrame)
     
     -- Delete button
     local deleteBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    deleteBtn:SetSize(45, 22)
+    deleteBtn:SetSize(50, 22)
     deleteBtn:SetPoint("LEFT", saveBtn, "RIGHT", 2, 0)
     deleteBtn:SetText(L["SET_DELETE"] or "Del")
     deleteBtn:SetScript("OnClick", function()
@@ -3971,7 +3971,7 @@ local function CreateSetControls(parent, dressingRoomFrame)
     
     -- Apply button
     local applyBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    applyBtn:SetSize(50, 22)
+    applyBtn:SetSize(70, 22)
     applyBtn:SetPoint("LEFT", deleteBtn, "RIGHT", 2, 0)
     applyBtn:SetText(L["SET_APPLY"] or "Apply")
     applyBtn:SetScript("OnClick", function()
@@ -4877,8 +4877,8 @@ local function CreateSetsPreviewPanel(parent)
     
     -- Copy Player button (aligned with title on left)
     local copyPlayerBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    copyPlayerBtn:SetSize(100, 20)
-    copyPlayerBtn:SetPoint("LEFT", frame, "TOPLEFT", 10, -17)
+    copyPlayerBtn:SetSize(100, 22)
+    copyPlayerBtn:SetPoint("LEFT", frame, "TOPLEFT", 0, 14)
     copyPlayerBtn:SetText(L["COPY_PLAYER"] or "Copy Player")
     copyPlayerBtn:SetScript("OnClick", function()
         StaticPopup_Show("TRANSMOG_COPY_PLAYER")
@@ -5063,7 +5063,7 @@ StaticPopupDialogs["TRANSMOG_COPY_PLAYER"] = {
 
 local function CreateMainFrame()
     local frame = CreateFrame("Frame", "TransmogMainFrame", UIParent)
-    frame:SetSize(1020, 700)
+    frame:SetSize(1020, 610)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -5083,7 +5083,7 @@ local function CreateMainFrame()
     })
     
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOP", 0, 30)
+    title:SetPoint("TOPLEFT", 120, -15)
     title:SetText(L["ADDON_TITLE"])
     
     local instructions = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -5094,7 +5094,7 @@ local function CreateMainFrame()
     closeBtn:SetPoint("TOPRIGHT", -5, -5)
     
     local slotContainer = CreateFrame("Frame", "$parentSlots", frame)
-    slotContainer:SetPoint("TOPLEFT", 12, -55)
+    slotContainer:SetPoint("TOPLEFT", 16, -55)
     slotContainer:SetSize(40, 460)
     
     local numSlots = #SLOT_ORDER
@@ -5115,7 +5115,7 @@ local function CreateMainFrame()
     -- ============================================================================
     modeToggleButton = CreateFrame("Button", "$parentModeToggle", frame, "ItemButtonTemplate")
     modeToggleButton:SetSize(18, 18)
-    modeToggleButton:SetPoint("TOP", slotContainer, "BOTTOM", 4, -10)
+    modeToggleButton:SetPoint("TOP", slotContainer, "BOTTOM", 0, -10)
     
     local modeNormal = modeToggleButton:GetNormalTexture()
     if modeNormal then modeNormal:SetTexture(nil) end
@@ -5212,43 +5212,43 @@ local function CreateMainFrame()
     frame.UpdateModeUI = UpdateModeUI
     
     dressingRoom = CreateDressingRoom(frame)
-    dressingRoom:SetPoint("TOPLEFT", 55, -55)
+    dressingRoom:SetPoint("TOPLEFT", 59, -55)
     frame.dressingRoom = dressingRoom
     
     -- Subclass dropdown
     subclassDropdown = CreateSubclassDropdown(frame)
-    subclassDropdown:SetPoint("TOPLEFT", 320, -25)
+    subclassDropdown:SetPoint("TOPLEFT", 340, -25)
     frame.subclassDropdown = subclassDropdown
     
-    -- Quality dropdown - REMOVE THE "local" keyword here
+    -- Quality dropdown
     qualityDropdown = CreateFrame("Frame", "TransmogQualityDropdown", frame, "UIDropDownMenuTemplate")
-    qualityDropdown:SetPoint("LEFT", subclassDropdown, "RIGHT", 10, 0)
+    qualityDropdown:SetPoint("LEFT", subclassDropdown, "RIGHT", -15, 0)
     UIDropDownMenu_SetWidth(qualityDropdown, 100)
     frame.qualityDropdown = qualityDropdown
     
-    -- NEW: Collection Filter dropdown (next to quality dropdown)
+    -- Collection Filter dropdown (next to quality dropdown)
     collectionFilterDropdown = CreateFrame("Frame", "TransmogCollectionFilterDropdown", frame, "UIDropDownMenuTemplate")
-    collectionFilterDropdown:SetPoint("LEFT", qualityDropdown, "RIGHT", 10, 0)
+    collectionFilterDropdown:SetPoint("LEFT", qualityDropdown, "RIGHT", -15, 0)
     UIDropDownMenu_SetWidth(collectionFilterDropdown, 100)
     frame.collectionFilterDropdown = collectionFilterDropdown
     
     local previewGrid = CreatePreviewGrid(frame)
-    previewGrid:SetPoint("TOPLEFT", 355, -55)
+    previewGrid:SetPoint("TOPLEFT", 359, -55)
     frame.previewGrid = previewGrid
     
     -- Create settings panel (same position as grid, hidden by default)
     settingsPanel = CreateSettingsPanel(frame)
-    settingsPanel:SetPoint("TOPLEFT", 355, -55)
+    settingsPanel:SetPoint("TOPLEFT", 359, -55)
     frame.settingsPanel = settingsPanel
     
     -- Create sets preview panel (same position as grid, hidden by default)
     setsPreviewPanel = CreateSetsPreviewPanel(frame)
-    setsPreviewPanel:SetPoint("TOPLEFT", 355, -55)
+    setsPreviewPanel:SetPoint("TOPLEFT", 359, -55)
     frame.setsPreviewPanel = setsPreviewPanel
     
     local resetBtn = CreateFrame("Button", "$parentReset", frame, "UIPanelButtonTemplate")
-    resetBtn:SetSize(65, 22)
-    resetBtn:SetPoint("TOPLEFT", dressingRoom, "BOTTOMLEFT", 10, -8)
+    resetBtn:SetSize(80, 22)
+    resetBtn:SetPoint("TOPLEFT", dressingRoom, "BOTTOMLEFT", 15, -8)
     resetBtn:SetText(L["RESET"])
     resetBtn:SetScript("OnClick", function(self, button)
         if button == "RightButton" then
@@ -5300,7 +5300,7 @@ local function CreateMainFrame()
     end)
     
     local undressBtn = CreateFrame("Button", "$parentUndress", frame, "UIPanelButtonTemplate")
-    undressBtn:SetSize(65, 22)
+    undressBtn:SetSize(80, 22)
     undressBtn:SetPoint("LEFT", resetBtn, "RIGHT", 5, 0)
     undressBtn:SetText(L["UNDRESS"])
     undressBtn:SetScript("OnClick", function()
@@ -5419,7 +5419,7 @@ local function CreateMainFrame()
     -- Sets Preview Button (left of Settings button)
     -- ========================================
     local setsPreviewBtn = CreateFrame("Button", "TransmogSetsPreviewButton", frame, "UIPanelButtonTemplate")
-    setsPreviewBtn:SetSize(50, 22)
+    setsPreviewBtn:SetSize(80, 22)
     setsPreviewBtn:SetPoint("RIGHT", settingsBtn, "LEFT", -5, 0)
     setsPreviewBtn:SetText(L["SETS_PREVIEW"] or "Sets")
     
