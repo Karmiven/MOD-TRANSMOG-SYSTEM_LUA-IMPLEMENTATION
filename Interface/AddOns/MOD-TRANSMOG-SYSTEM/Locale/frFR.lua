@@ -244,6 +244,7 @@ L["CLASS_DRUID"] = "Druide"
 L["SETTING_BG_CLASSES"] = "Classes"
 L["SETTING_BG_RACES"] = "Races"
 L["SETTING_BG_ALLIED"] = "Races alliées"
+L["SETTING_BG_MISCELLANEOUS"] = "Divers"
 
 -- Race Names (for background dropdown)
 L["RACE_HUMAN"] = "Humain"
@@ -273,6 +274,9 @@ L["RACE_ZANDALARI"] = "Troll zandalari"
 L["RACE_VULPERA"] = "Vulpérin"
 L["RACE_DRACTHYR"] = "Dracthyr"
 L["RACE_EARTHEN"] = "Terrestre"
+
+-- Miscellaneous
+L["BG_PET"] = "Familier"
 
 -- Quality Names
 L["QUALITY_ALL"] = "Tous"

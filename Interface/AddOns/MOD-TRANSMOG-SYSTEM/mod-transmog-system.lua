@@ -3712,6 +3712,8 @@ local TEXTURE_INFO = {
     RACE_VULPERA            = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressupbackgroundvulpera",           contentW = 423, contentH = 442 },
     RACE_WORGEN             = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressupbackgroundworgen",            contentW = 423, contentH = 442 },
     RACE_ZANDALARI          = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressupbackgroundzandalaritroll",    contentW = 423, contentH = 442 },
+    -- Miscellaneous  (423x442 in 512x512)
+    BG_PET                  = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressupbackgroundpet",               contentW = 423, contentH = 442 },
 }
 Transmog.TEXTURE_INFO = TEXTURE_INFO
 
@@ -4600,6 +4602,12 @@ local function CreateSettingsPanel(parent)
                 { value = "RACE_VULPERA", label = L["RACE_VULPERA"] or "Vulpera" },
                 { value = "RACE_DRACTHYR", label = L["RACE_DRACTHYR"] or "Dracthyr" },
                 { value = "RACE_EARTHEN", label = L["RACE_EARTHEN"] or "Earthen" },
+            }
+        },
+        { 
+			name = L["SETTING_BG_MISCELLANEOUS"] or "Miscellaneous", 
+            items = {
+                { value = "BG_PET", label = L["BG_PET"] or "Pet" },
             }
         },
     }
