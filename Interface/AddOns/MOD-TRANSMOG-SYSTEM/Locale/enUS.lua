@@ -9,7 +9,7 @@ local L = Transmog.L
 
 -- UI Strings
 L["ADDON_TITLE"] = "Transmogrification"
-L["INSTRUCTIONS"] = "" -- "|cff00ff00Left Mouse:|r rotate  |  |cff00ff00Right Mouse:|r pan  |  |cff00ff00Wheel:|r zoom"
+L["INSTRUCTIONS"] = "|cff00ff00Left Mouse:|r rotate  |  |cff00ff00Right Mouse:|r pan  |  |cff00ff00Wheel:|r zoom"
 L["RESET"] = "Reset"
 L["UNDRESS"] = "Undress"
 L["PAGE"] = "Page %d/%d"
