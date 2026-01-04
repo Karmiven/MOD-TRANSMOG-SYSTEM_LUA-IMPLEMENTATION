@@ -104,6 +104,7 @@ Dedicated UI interface addon instead to bypass standard NPC gossip, which is con
 
 * World of Warcraft 3.3.5a
 * AIO [https://github.com/Rochet2/AIO](https://github.com/Rochet2/AIO)
+* !!!ClassicApi [https://gitlab.com/Tsoukie/classicapi](https://gitlab.com/Tsoukie/classicapi)
 * AddOns enabled
 
 ### This Project

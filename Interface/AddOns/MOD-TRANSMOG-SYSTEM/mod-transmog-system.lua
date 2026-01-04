@@ -6115,100 +6115,131 @@ local function CreateMainFrame()
 end
 
 -- ============================================================================
--- Character Frame Tab
+-- Minimap Button
 -- ============================================================================
 
-local function CreateCharacterFrameTab()
-    local tab = CreateFrame("Button", nil, CharacterFrame, "ItemButtonTemplate")
-    tab:SetSize(36, 36)
-    tab:SetPoint("BOTTOMLEFT", CharacterModelFrame, "BOTTOMLEFT", 0, -20)
-    tab:EnableMouse(true)
-    tab:SetMovable(false)
-    tab:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+local minimapButton = nil
 
-    -- Strata aligned on CharacterFrame
-    tab:SetFrameStrata(CharacterFrame:GetFrameStrata())
-    tab:SetFrameLevel(CharacterFrame:GetFrameLevel() + 5)
-
-    -- Hide default normal texture
-    local normal = tab:GetNormalTexture()
-    if normal then
-        normal:SetTexture(nil)
+local function CreateMinimapButton()
+    -- Initialize saved position (default angle: 225 degrees, bottom-left area)
+    TransmogDB.minimapPos = TransmogDB.minimapPos or 225
+    
+    local button = CreateFrame("Button", "TransmogMinimapButton", Minimap)
+    button:SetSize(32, 32)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel(8)
+    button:EnableMouse(true)
+    button:SetMovable(true)
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:RegisterForDrag("LeftButton")
+    
+    -- Button textures (standard minimap button style)
+    local overlay = button:CreateTexture(nil, "OVERLAY")
+    overlay:SetSize(53, 53)
+    overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    overlay:SetPoint("TOPLEFT", 0, 0)
+    
+    local background = button:CreateTexture(nil, "BACKGROUND")
+    background:SetSize(20, 20)
+    background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    background:SetPoint("TOPLEFT", 7, -5)
+    
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(20, 20)
+    icon:SetTexture("Interface\\Icons\\Spell_holy_divineprovidence")
+    icon:SetPoint("TOPLEFT", 7, -6)
+    button.icon = icon
+    
+    -- Highlight texture
+    local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+    highlight:SetSize(20, 20)
+    highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    highlight:SetPoint("TOPLEFT", 7, -6)
+    highlight:SetBlendMode("ADD")
+    
+    -- Position update function (using angle around minimap)
+    local function UpdatePosition()
+        local angle = math.rad(TransmogDB.minimapPos or 225)
+        local x = math.cos(angle) * 80
+        local y = math.sin(angle) * 80
+        button:ClearAllPoints()
+        button:SetPoint("CENTER", Minimap, "CENTER", x, y)
     end
-    -- Second background ornament to replace wrists for smoother ui
-    tab.BG2 = tab:CreateTexture(nil, "BACKGROUND")
-    tab.BG2:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
-    tab.BG2:SetTexCoord(0, 0.5625, 0, 0.5625)
-	tab.BG2:SetPoint("center", CharacterFrame, "center", -152, -124)
-    tab.BG2:SetSize(58, 58)
-	
-    -- Background ornament
-    tab.BG = tab:CreateTexture(nil, "BACKGROUND")
-    tab.BG:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
-    tab.BG:SetTexCoord(0, 0.5625, 0, 0.5625)
-    tab.BG:SetSize(58, 58)
-    tab.BG:SetPoint("CENTER")
-
-    -- Icon
-    tab.Icon = tab:CreateTexture(nil, "ARTWORK")
-    tab.Icon:SetTexture("Interface\\Icons\\Spell_holy_divineprovidence")
-    tab.Icon:SetSize(37, 37)
-    tab.Icon:SetPoint("CENTER")
-
-    -- Blizzard slot border
-    tab.Border = tab:CreateTexture(nil, "OVERLAY")
-    tab.Border:SetTexture("Interface\\CharacterFrame\\UI-Character-Slot-Border")
-    tab.Border:SetAllPoints()
-    tab.Border:SetDrawLayer("OVERLAY", 6)
-
+    
+    -- Dragging functionality
+    local isDragging = false
+    
+    button:SetScript("OnDragStart", function(self)
+        isDragging = true
+        self:SetScript("OnUpdate", function(self)
+            local mx, my = Minimap:GetCenter()
+            local cx, cy = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            cx, cy = cx / scale, cy / scale
+            
+            -- Calculate angle from minimap center to cursor
+            local angle = math.deg(math.atan2(cy - my, cx - mx))
+            TransmogDB.minimapPos = angle
+            UpdatePosition()
+        end)
+    end)
+    
+    button:SetScript("OnDragStop", function(self)
+        isDragging = false
+        self:SetScript("OnUpdate", nil)
+    end)
+    
     -- Click handler
-    tab:SetScript("OnClick", function(self)
-        PlaySound("igCharacterInfoTab")
-        if mainFrame then
-            if mainFrame:IsShown() then
-                mainFrame:Hide()
-            else
-                mainFrame:Show()
+    button:SetScript("OnClick", function(self, btn)
+        if btn == "LeftButton" then
+            PlaySound("igCharacterInfoTab")
+            if mainFrame then
+                if mainFrame:IsShown() then
+                    mainFrame:Hide()
+                else
+                    mainFrame:Show()
+                end
             end
+        elseif btn == "RightButton" then
+            -- Right-click: Show help
+            print(L["HELP_1"])
+            print(L["HELP_2"])
+            print(L["HELP_3"])
         end
     end)
-
+    
     -- Mouse feedback
-    tab:SetScript("OnMouseDown", function(self)
-        self.Icon:SetAlpha(0.7)
+    button:SetScript("OnMouseDown", function(self, btn)
+        if btn == "LeftButton" and not isDragging then
+            self.icon:SetPoint("TOPLEFT", 8, -7)
+        end
     end)
-
-    tab:SetScript("OnMouseUp", function(self)
-        self.Icon:SetAlpha(1.0)
+    
+    button:SetScript("OnMouseUp", function(self)
+        self.icon:SetPoint("TOPLEFT", 7, -6)
     end)
-
+    
     -- Tooltip
-    tab:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText(L["TAB_NAME"])
+    button:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText(L["TAB_NAME"] or "Transmog")
+        GameTooltip:AddLine(L["MINIMAP_TOOLTIP_LEFT"] or "|cffffffffLeft-Click:|r Open Transmog Window", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(L["MINIMAP_TOOLTIP_RIGHT"] or "|cffffffffRight-Click:|r Show Help", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(L["MINIMAP_TOOLTIP_DRAG"] or "|cffffffffDrag:|r Move Button", 0.8, 0.8, 0.8)
         GameTooltip:Show()
     end)
-
-    tab:SetScript("OnLeave", GameTooltip_Hide)
-    tab:Hide()
-
-    local function UpdateTabVisibility()
-        local selectedTab = PanelTemplates_GetSelectedTab(CharacterFrame) or 1
-        if selectedTab == 1 then
-            tab:Show()
-        else
-            tab:Hide()
-        end
-    end
-
-    -- Hook on CharacterFrame opening
-    CharacterFrame:HookScript("OnShow", UpdateTabVisibility)
-
-    -- Update when changing tab
-    hooksecurefunc("CharacterFrame_ShowSubFrame", UpdateTabVisibility)
-
-    return tab
+    
+    button:SetScript("OnLeave", function(self)
+        GameTooltip:Hide()
+    end)
+    
+    -- Initial position
+    UpdatePosition()
+    
+    minimapButton = button
+    return button
 end
+
 
 -- ============================================================================
 -- Initialization
@@ -6263,7 +6294,7 @@ initFrame:SetScript("OnEvent", function(self, event)
         end)
         
         mainFrame = CreateMainFrame()
-        CreateCharacterFrameTab()
+        CreateMinimapButton()
         
         currentSlot = "Head"
         currentSubclass = slotSelectedSubclass["Head"] or "All"
