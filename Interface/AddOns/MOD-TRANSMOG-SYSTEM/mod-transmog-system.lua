@@ -2903,6 +2903,8 @@ UpdateEnchantGrid = function()
         frame:Hide()
         frame.enchantMode = nil
         frame.enchantData = nil
+        frame.isHideOption = nil
+        if frame.hideIcon then frame.hideIcon:Hide() end
     end
     
     local startIndex = (currentEnchantPage - 1) * enchantPerPage + 1
@@ -2930,6 +2932,7 @@ UpdateEnchantGrid = function()
             frame.enchantData = enchantData
             frame.itemId = nil
             frame.displayId = nil
+            frame.isHideOption = nil  -- Clear hide option flag (armor-only feature)
             
             -- Hide model, show icon instead
             if frame.model then frame.model:Hide() end
@@ -2979,6 +2982,7 @@ UpdateEnchantGrid = function()
             if frame.collectedIcon then frame.collectedIcon:Hide() end
             if frame.activeText then frame.activeText:Hide() end
             if frame.newIcon then frame.newIcon:Hide() end
+            if frame.hideIcon then frame.hideIcon:Hide() end  -- Hide the armor "hide slot" icon
             
             frame:Show()
             gridIndex = gridIndex + 1
