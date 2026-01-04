@@ -239,6 +239,7 @@ L["CLASS_MAGE"] = "Mage"
 L["CLASS_WARLOCK"] = "Warlock"
 L["CLASS_MONK"] = "Monk"
 L["CLASS_DRUID"] = "Druid"
+L["CLASS_DEMONHUNTER"] = "Demon Hunter"
 
 -- Background Dropdown Separators
 L["SETTING_BG_CLASSES"] = "Classes"

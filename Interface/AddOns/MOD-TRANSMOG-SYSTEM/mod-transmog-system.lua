@@ -3686,6 +3686,7 @@ local TEXTURE_INFO = {
     WARLOCK     = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomwarlock",     contentW = 480, contentH = 502 },
     MONK        = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroommonk",        contentW = 480, contentH = 502 },
     DRUID       = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdruid",       contentW = 480, contentH = 502 },
+    DEMONHUNTER = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressingroomdemonhunter", contentW = 480, contentH = 502 },
     -- Races (423x442 in 512x512)
     RACE_BLOODELF           = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressupbackgroundbloodelf",          contentW = 423, contentH = 442 },
     RACE_DARKIRON           = { path = "Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\dressupbackgrounddarkiron",          contentW = 423, contentH = 442 },
@@ -4567,6 +4568,7 @@ local function CreateSettingsPanel(parent)
                 { value = "WARLOCK", label = L["CLASS_WARLOCK"] or "Warlock" },
                 { value = "MONK", label = L["CLASS_MONK"] or "Monk" },
                 { value = "DRUID", label = L["CLASS_DRUID"] or "Druid" },
+                { value = "DEMONHUNTER", label = L["CLASS_DEMONHUNTER"] or "Demon Hunter" },
             }
         },
         { 
