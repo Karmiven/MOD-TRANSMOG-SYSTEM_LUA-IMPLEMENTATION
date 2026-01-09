@@ -104,7 +104,7 @@ Dedicated UI interface addon instead to bypass standard NPC gossip, which is con
 
 * World of Warcraft 3.3.5a
 * AIO [https://github.com/Rochet2/AIO](https://github.com/Rochet2/AIO)
-* !!!ClassicApi [https://gitlab.com/Tsoukie/classicapi](https://gitlab.com/Tsoukie/classicapi)
+* !!!ClassicApi [https://gitlab.com/Tsoukie/classicapi](https://gitlab.com/Tsoukie/classicapi) (optional, but might help if I'm mixing addon api again)
 * AddOns enabled
 
 ### This Project
@@ -123,6 +123,7 @@ Copy the AddOn folder to your client:
 World of Warcraft/
 └── Interface/
     └── AddOns/
+        ├───!!!ClassicApi
         ├───AIO_Client
         └── MOD-TRANSMOG-SYSTEM/
 ```

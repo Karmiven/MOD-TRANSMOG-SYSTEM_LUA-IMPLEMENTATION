@@ -557,6 +557,38 @@ if not C_Timer then
 end
 
 -- ============================================================================
+-- WoW 3.3.5a String Polyfill
+-- ============================================================================
+-- string:trim() is used by slash commands but doesn't exist in 3.3.5a as is
+-- This helper functions provide the functionality if !!!ClassicApi is not installed
+
+do
+    local stringMeta = getmetatable("")
+    if stringMeta and stringMeta.__index then
+        if not stringMeta.__index.trim then
+            stringMeta.__index.trim = function(s)
+                return s:match("^%s*(.-)%s*$")
+            end
+        end
+    end
+end
+
+-- ============================================================================
+-- WoW 3.3.5a Frame API Compatibility
+-- ============================================================================
+-- SetSize() and SetColorTexture() don't exist in 3.3.5a as is
+-- These helper functions provide the functionality if !!!ClassicApi is not installed
+
+local function FrameSetSize(obj, w, h)
+    obj:SetWidth(w)
+    obj:SetHeight(h or w)
+end
+
+local function TextureSetColorTexture(tex, r, g, b, a)
+    tex:SetTexture(r, g, b, a or 1)
+end
+
+-- ============================================================================
 -- Collection Functions
 -- ============================================================================
 
@@ -2275,7 +2307,7 @@ local selectedItemFrame = nil
 
 local function CreateItemFrame(parent, index)
     local frame = CreateFrame("Frame", "$parentItem"..index, parent)
-    frame:SetSize(100, 120)
+    FrameSetSize(frame, 100, 120)
     
     frame:SetBackdrop({
         bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
@@ -2293,7 +2325,7 @@ local function CreateItemFrame(parent, index)
     frame.model = model
     
     local collectedIcon = frame:CreateTexture(nil, "OVERLAY")
-    collectedIcon:SetSize(16, 16)
+    FrameSetSize(collectedIcon, 16, 16)
     collectedIcon:SetPoint("TOPRIGHT", -2, -2)
     collectedIcon:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
     collectedIcon:Hide()
@@ -2741,7 +2773,7 @@ local function UpdateItemFrame(frame, itemData, slotName)
         if not frame.hideIcon then
             local hideIcon = frame:CreateTexture(nil, "ARTWORK")
             hideIcon:SetPoint("CENTER", 0, 0)
-            hideIcon:SetSize(48, 48)
+            FrameSetSize(hideIcon, 48, 48)
             -- Use a cancel/hide icon - INV_Misc_QuestionMark works as placeholder
             hideIcon:SetTexture("Interface\\PaperDollInfoFrame\\UI-GearManager-LeaveItem-Transparent")
             frame.hideIcon = hideIcon
@@ -2844,7 +2876,7 @@ UpdatePreviewGrid = function()
         local frame = itemFrames[gridIndex]
         
         if frame and itemData then
-            frame:SetSize(itemWidth, itemHeight)
+            FrameSetSize(frame, itemWidth, itemHeight)
             local col = (gridIndex - 1) % cols
             local row = math.floor((gridIndex - 1) / cols)
             local x = col * (itemWidth + GRID_SPACING)
@@ -2919,7 +2951,7 @@ UpdateEnchantGrid = function()
         local frame = itemFrames[gridIndex]
         
         if frame and enchantData then
-            frame:SetSize(itemWidth, itemHeight)
+            FrameSetSize(frame, itemWidth, itemHeight)
             local col = (gridIndex - 1) % cols
             local row = math.floor((gridIndex - 1) / cols)
             local x = col * (itemWidth + GRID_SPACING)
@@ -2940,7 +2972,7 @@ UpdateEnchantGrid = function()
             -- Create or update enchant icon
             if not frame.enchantIcon then
                 frame.enchantIcon = frame:CreateTexture(nil, "ARTWORK")
-                frame.enchantIcon:SetSize(itemWidth - 20, itemWidth - 20)
+                FrameSetSize(frame.enchantIcon, itemWidth - 20, itemWidth - 20)
                 frame.enchantIcon:SetPoint("TOP", 0, -10)
             end
             frame.enchantIcon:SetTexture(enchantData.icon)
@@ -3003,7 +3035,7 @@ end
 
 local function CreatePreviewGrid(parent)
     local frame = CreateFrame("Frame", "$parentPreviewGrid", parent)
-    frame:SetSize(GRID_WIDTH, GRID_HEIGHT)
+    FrameSetSize(frame, GRID_WIDTH, GRID_HEIGHT)
     
     local maxItems = 20
     for i = 1, maxItems do
@@ -3018,14 +3050,14 @@ local function CreatePreviewGrid(parent)
     scrollFrame:SetWidth(20)
     
     local upBtn = CreateFrame("Button", nil, scrollFrame)
-    upBtn:SetSize(20, 20)
+    FrameSetSize(upBtn, 20, 20)
     upBtn:SetPoint("TOP", 0, 0)
     upBtn:SetNormalTexture("Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up")
     upBtn:SetPushedTexture("Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Down")
     upBtn:SetHighlightTexture("Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Highlight")
     
     local downBtn = CreateFrame("Button", nil, scrollFrame)
-    downBtn:SetSize(20, 20)
+    FrameSetSize(downBtn, 20, 20)
     downBtn:SetPoint("BOTTOM", 0, 0)
     downBtn:SetNormalTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Up")
     downBtn:SetPushedTexture("Interface\\Buttons\\UI-ScrollBar-ScrollDownButton-Down")
@@ -3051,7 +3083,7 @@ local function CreatePreviewGrid(parent)
     
     local thumb = slider:CreateTexture(nil, "OVERLAY")
     thumb:SetTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
-    thumb:SetSize(20, 24)
+    FrameSetSize(thumb, 20, 24)
     slider:SetThumbTexture(thumb)
     
     gridScrollbar = slider
@@ -3263,7 +3295,7 @@ end
 
 local function CreateSlotButton(parent, slotName)
     local btn = CreateFrame("CheckButton", "$parent"..slotName, parent)
-    btn:SetSize(32, 32)
+    FrameSetSize(btn, 32, 32)
     
     local config = SLOT_CONFIG[slotName]
     local textureName = config and config.texture or slotName
@@ -3278,14 +3310,14 @@ local function CreateSlotButton(parent, slotName)
     
     -- Create overlay icon for active transmog
     local transmogIcon = overlayFrame:CreateTexture(nil, "ARTWORK")
-    transmogIcon:SetSize(28, 28)
+    FrameSetSize(transmogIcon, 28, 28)
     transmogIcon:SetPoint("CENTER")
     transmogIcon:Hide()
     btn.transmogIcon = transmogIcon
     
     -- Create active indicator border
     local activeBorder = overlayFrame:CreateTexture(nil, "OVERLAY")
-    activeBorder:SetSize(48, 48)
+    FrameSetSize(activeBorder, 48, 48)
     activeBorder:SetPoint("CENTER")
     activeBorder:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
     activeBorder:SetBlendMode("ADD")
@@ -3771,7 +3803,7 @@ Transmog.CalculateTexCoords = CalculateTexCoords
 
 local function CreateDressingRoom(parent)
     local frame = CreateFrame("Frame", "$parentDressingRoom", parent)
-    frame:SetSize(280, 460)
+    FrameSetSize(frame, 280, 460)
     
     -- Frame dimensions for texture coordinate calculation
     local frameWidth, frameHeight = 272, 452  -- Account for 4px insets
@@ -4034,7 +4066,7 @@ StaticPopupDialogs["TRANSMOG_DELETE_SET"] = {
 
 local function CreateSetControls(parent, dressingRoomFrame)
     local container = CreateFrame("Frame", nil, parent)
-    container:SetSize(280, 30)
+    FrameSetSize(container, 280, 30)
     container:SetPoint("TOP", dressingRoomFrame, "BOTTOM", 0, -5)
     
     -- Set dropdown
@@ -4043,7 +4075,7 @@ local function CreateSetControls(parent, dressingRoomFrame)
     
     -- Save button
     local saveBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    saveBtn:SetSize(60, 22)
+    FrameSetSize(saveBtn, 60, 22)
     saveBtn:SetPoint("LEFT", setDropdown, "RIGHT", -5, 2)
     saveBtn:SetText(L["SET_SAVE"] or "Save")
     saveBtn:SetScript("OnClick", function()
@@ -4072,7 +4104,7 @@ local function CreateSetControls(parent, dressingRoomFrame)
     
     -- Delete button
     local deleteBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    deleteBtn:SetSize(50, 22)
+    FrameSetSize(deleteBtn, 50, 22)
     deleteBtn:SetPoint("LEFT", saveBtn, "RIGHT", 2, 0)
     deleteBtn:SetText(L["SET_DELETE"] or "Del")
     deleteBtn:SetScript("OnClick", function()
@@ -4095,7 +4127,7 @@ local function CreateSetControls(parent, dressingRoomFrame)
     
     -- Apply button
     local applyBtn = CreateFrame("Button", nil, container, "UIPanelButtonTemplate")
-    applyBtn:SetSize(70, 22)
+    FrameSetSize(applyBtn, 70, 22)
     applyBtn:SetPoint("LEFT", deleteBtn, "RIGHT", 2, 0)
     applyBtn:SetText(L["SET_APPLY"] or "Apply")
     applyBtn:SetScript("OnClick", function()
@@ -4128,7 +4160,7 @@ end
 -- Function to create search bar
 local function CreateSearchBar(parent, previewGrid)
     local searchContainer = CreateFrame("Frame", "$parentSearchContainer", parent)
-    searchContainer:SetSize(620, 40)
+    FrameSetSize(searchContainer, 620, 40)
     searchContainer:SetPoint("BOTTOM", previewGrid, "BOTTOM", 0, -70)
     
     -- Set background and border
@@ -4178,7 +4210,7 @@ local function CreateSearchBar(parent, previewGrid)
     
     -- Search input box (wider since we removed buttons)
     local searchEditBox = CreateFrame("EditBox", "$parentSearchEditBox", searchContainer, "InputBoxTemplate")
-    searchEditBox:SetSize(320, 20)
+    FrameSetSize(searchEditBox, 320, 20)
     searchEditBox:SetPoint("LEFT", searchLabel, "RIGHT", 10, 0)
     searchEditBox:SetAutoFocus(false)
     searchEditBox:SetMaxLetters(100)
@@ -4395,7 +4427,7 @@ local isSettingsVisible = false
 
 local function CreateSettingsPanel(parent)
     local frame = CreateFrame("Frame", "$parentSettingsPanel", parent)
-    frame:SetSize(620, 460)  -- Same size as preview grid
+    FrameSetSize(frame, 620, 460)  -- Same size as preview grid
     frame:SetBackdrop({
         bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -4420,7 +4452,7 @@ local function CreateSettingsPanel(parent)
     scrollFrame:SetPoint("BOTTOMRIGHT", -30, 10)
     
     local content = CreateFrame("Frame", "$parentContent", scrollFrame)
-    content:SetSize(560, 600)  -- Height will expand as needed
+    FrameSetSize(content, 560, 600)  -- Height will expand as needed
     scrollFrame:SetScrollChild(content)
     
     local yOffset = 0
@@ -4437,8 +4469,8 @@ local function CreateSettingsPanel(parent)
         
         local line = content:CreateTexture(nil, "ARTWORK")
         line:SetPoint("TOPLEFT", 10, yOffset)
-        line:SetSize(540, 1)
-        line:SetColorTexture(0.5, 0.5, 0.5, 0.5)
+        FrameSetSize(line, 540, 1)
+        TextureSetColorTexture(line, 0.5, 0.5, 0.5, 0.5)
         yOffset = yOffset - 10
         
         return header
@@ -4448,7 +4480,7 @@ local function CreateSettingsPanel(parent)
     local function CreateCheckbox(label, settingKey, isCharacterSpecific)
         local check = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
         check:SetPoint("TOPLEFT", 20, yOffset)
-        check:SetSize(24, 24)
+        FrameSetSize(check, 24, 24)
         
         local text = check:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         text:SetPoint("LEFT", check, "RIGHT", 5, 0)
@@ -4633,7 +4665,7 @@ local function CreateSettingsPanel(parent)
         if bgSelectorPopup then return bgSelectorPopup end
         
         local popup = CreateFrame("Frame", "TransmogBackgroundSelectorPopup", UIParent)
-        popup:SetSize(340, 380)
+        FrameSetSize(popup, 340, 380)
         popup:SetFrameStrata("FULLSCREEN_DIALOG")
         popup:SetFrameLevel(100)
         popup:SetBackdrop({
@@ -4704,7 +4736,7 @@ local function CreateSettingsPanel(parent)
         end
         
         local scrollContent = CreateFrame("Frame", nil, scrollFrame)
-        scrollContent:SetSize(280, 10)  -- Height will be set dynamically
+        FrameSetSize(scrollContent, 280, 10)  -- Height will be set dynamically
         scrollFrame:SetScrollChild(scrollContent)
         popup.scrollContent = scrollContent
         
@@ -4738,8 +4770,8 @@ local function CreateSettingsPanel(parent)
             -- Separator line under category header
             local line = scrollContent:CreateTexture(nil, "ARTWORK")
             line:SetPoint("TOPLEFT", 5, contentY)
-            line:SetSize(280, 1)
-            line:SetColorTexture(0.5, 0.5, 0.5, 0.5)
+            FrameSetSize(line, 280, 1)
+            TextureSetColorTexture(line, 0.5, 0.5, 0.5, 0.5)
             contentY = contentY - 8
             
             -- Thumbnails in grid
@@ -4751,7 +4783,7 @@ local function CreateSettingsPanel(parent)
                 local xPos = col * (thumbSize + thumbSpacing)
                 
                 local thumb = CreateFrame("Button", nil, scrollContent)
-                thumb:SetSize(thumbSize, thumbSize)
+                FrameSetSize(thumb, thumbSize, thumbSize)
                 thumb:SetPoint("TOPLEFT", xPos + 5, contentY)
                 
                 -- Background texture preview
@@ -4769,7 +4801,7 @@ local function CreateSettingsPanel(parent)
                         local bottom = 0.9 * (contentH / 512)
                         tex:SetTexCoord(left, right, top, bottom)
                     else
-                        tex:SetColorTexture(0.3, 0.3, 0.3, 1)
+                        TextureSetColorTexture(tex, 0.3, 0.3, 0.3, 1)
                     end
                 else
                     -- Auto option - show player's class texture
@@ -4790,7 +4822,7 @@ local function CreateSettingsPanel(parent)
                 local border = thumb:CreateTexture(nil, "OVERLAY")
                 border:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
                 border:SetTexCoord(0, 0.5625, 0, 0.5625)
-                border:SetSize(48, 48)  -- Slightly larger than 40x40 thumb to create border
+                FrameSetSize(border, 48, 48)  -- Slightly larger than 40x40 thumb to create border
                 border:SetPoint("CENTER", thumb, "CENTER", 0, 0)
                 thumb.border = border
                 
@@ -4798,7 +4830,7 @@ local function CreateSettingsPanel(parent)
                 local selected = thumb:CreateTexture(nil, "OVERLAY", nil, 1)
                 selected:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
                 selected:SetTexCoord(0, 0.5625, 0, 0.5625)
-                selected:SetSize(48, 48)
+                FrameSetSize(selected, 48, 48)
                 selected:SetPoint("CENTER", thumb, "CENTER", 0, 0)
                 selected:SetVertexColor(1, 0.82, 0, 1)  -- Gold tint for selected
                 selected:SetBlendMode("ADD")
@@ -4809,7 +4841,7 @@ local function CreateSettingsPanel(parent)
                 local highlight = thumb:CreateTexture(nil, "HIGHLIGHT")
                 highlight:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
                 highlight:SetTexCoord(0, 0.5625, 0, 0.5625)
-                highlight:SetSize(48, 48)
+                FrameSetSize(highlight, 48, 48)
                 highlight:SetPoint("CENTER", thumb, "CENTER", 0, 0)
                 highlight:SetVertexColor(1, 1, 1, 0.5)
                 highlight:SetBlendMode("ADD")
@@ -4917,12 +4949,12 @@ local function CreateSettingsPanel(parent)
         
         -- Container for button and preview
         local container = CreateFrame("Frame", nil, content)
-        container:SetSize(220, 30)
+        FrameSetSize(container, 220, 30)
         container:SetPoint("TOPLEFT", 20, yOffset)
         
         -- Preview thumbnail
         local preview = container:CreateTexture(nil, "ARTWORK")
-        preview:SetSize(28, 28)
+        FrameSetSize(preview, 28, 28)
         preview:SetPoint("LEFT", 0, 0)
         container.preview = preview
         
@@ -4930,12 +4962,12 @@ local function CreateSettingsPanel(parent)
         local previewBorder = container:CreateTexture(nil, "OVERLAY")
         previewBorder:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
         previewBorder:SetTexCoord(0, 0.5625, 0, 0.5625)
-        previewBorder:SetSize(36, 36)  -- Slightly larger than 28x28 preview
+        FrameSetSize(previewBorder, 36, 36)  -- Slightly larger than 28x28 preview
         previewBorder:SetPoint("CENTER", preview, "CENTER", 0, 0)
         
         -- Selection button
         local btn = CreateFrame("Button", nil, container)
-        btn:SetSize(180, 26)
+        FrameSetSize(btn, 180, 26)
         btn:SetPoint("LEFT", preview, "RIGHT", 8, 0)
         btn:SetBackdrop({
             bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -5151,7 +5183,7 @@ local SET_PREVIEW_SLOT_ORDER = {
 local function CreateSetPreviewEntry(parent, index, setNumber, setData)
     -- Each entry: Dressing room model (left) + Slot grid with icons and names (right)
     local entryFrame = CreateFrame("Frame", nil, parent)
-    entryFrame:SetSize(295, 200)
+    FrameSetSize(entryFrame, 295, 200)
     entryFrame.setNumber = setNumber
     
     -- Set name label at top
@@ -5163,7 +5195,7 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
     
     -- Dressing room model frame with background
     local modelFrame = CreateFrame("Frame", nil, entryFrame)
-    modelFrame:SetSize(130, 175)
+    FrameSetSize(modelFrame, 130, 175)
     modelFrame:SetPoint("TOPLEFT", 5, -18)
     
     -- Frame dimensions for texture coordinate calculation (account for 2px insets)
@@ -5255,7 +5287,7 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
     
     -- Slot icons and names container (right side of model)
     local slotsContainer = CreateFrame("Frame", nil, entryFrame)
-    slotsContainer:SetSize(145, 180)
+    FrameSetSize(slotsContainer, 145, 180)
     slotsContainer:SetPoint("LEFT", modelFrame, "RIGHT", 5, 0)
     
     entryFrame.slotIcons = {}
@@ -5269,7 +5301,7 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
         
         -- Slot icon
         local iconFrame = CreateFrame("Frame", nil, slotsContainer)
-        iconFrame:SetSize(13, 13)
+        FrameSetSize(iconFrame, 13, 13)
         iconFrame:SetPoint("TOPLEFT", 0, yPos)
         
         local icon = iconFrame:CreateTexture(nil, "ARTWORK")
@@ -5417,7 +5449,7 @@ end
 
 local function CreateSetsPreviewPanel(parent)
     local frame = CreateFrame("Frame", "$parentSetsPreviewPanel", parent)
-    frame:SetSize(620, 460)  -- Same size as preview grid
+    FrameSetSize(frame, 620, 460)  -- Same size as preview grid
     frame:SetBackdrop({
         bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -5438,7 +5470,7 @@ local function CreateSetsPreviewPanel(parent)
     
     -- Copy Player button (aligned with title on left)
     local copyPlayerBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    copyPlayerBtn:SetSize(100, 22)
+    FrameSetSize(copyPlayerBtn, 100, 22)
     copyPlayerBtn:SetPoint("LEFT", frame, "TOPLEFT", 0, 14)
     copyPlayerBtn:SetText(L["COPY_PLAYER"] or "Copy Player")
     copyPlayerBtn:SetScript("OnClick", function()
@@ -5624,7 +5656,7 @@ StaticPopupDialogs["TRANSMOG_COPY_PLAYER"] = {
 
 local function CreateMainFrame()
     local frame = CreateFrame("Frame", "TransmogMainFrame", UIParent)
-    frame:SetSize(1020, 610)
+    FrameSetSize(frame, 1020, 610)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -5656,7 +5688,7 @@ local function CreateMainFrame()
     
     local slotContainer = CreateFrame("Frame", "$parentSlots", frame)
     slotContainer:SetPoint("TOPLEFT", 16, -55)
-    slotContainer:SetSize(40, 460)
+    FrameSetSize(slotContainer, 40, 460)
     
     local numSlots = #SLOT_ORDER
     local buttonSize = 32
@@ -5675,7 +5707,7 @@ local function CreateMainFrame()
     -- Mode Toggle Button (Item/Enchant)
     -- ============================================================================
     modeToggleButton = CreateFrame("Button", "$parentModeToggle", frame, "ItemButtonTemplate")
-    modeToggleButton:SetSize(18, 18)
+    FrameSetSize(modeToggleButton, 18, 18)
     modeToggleButton:SetPoint("TOP", slotContainer, "BOTTOM", 0, -10)
     
     local modeNormal = modeToggleButton:GetNormalTexture()
@@ -5684,12 +5716,12 @@ local function CreateMainFrame()
     modeToggleButton.BG = modeToggleButton:CreateTexture(nil, "BACKGROUND")
     modeToggleButton.BG:SetTexture("Interface\\AddOns\\MOD-TRANSMOG-SYSTEM\\Assets\\uiframediamondmetalclassicborder")
     modeToggleButton.BG:SetTexCoord(0, 0.5625, 0, 0.5625)
-    modeToggleButton.BG:SetSize(29, 29)
+    FrameSetSize(modeToggleButton.BG, 29, 29)
     modeToggleButton.BG:SetPoint("CENTER")
     
     modeToggleButton.Icon = modeToggleButton:CreateTexture(nil, "ARTWORK")
     modeToggleButton.Icon:SetTexture("Interface\\Icons\\INV_Fabric_Silk_02")
-    modeToggleButton.Icon:SetSize(17, 17)
+    FrameSetSize(modeToggleButton.Icon, 17, 17)
     modeToggleButton.Icon:SetPoint("CENTER")
     
     modeToggleButton.Border = modeToggleButton:CreateTexture(nil, "OVERLAY")
@@ -5808,7 +5840,7 @@ local function CreateMainFrame()
     frame.setsPreviewPanel = setsPreviewPanel
     
     local resetBtn = CreateFrame("Button", "$parentReset", frame, "UIPanelButtonTemplate")
-    resetBtn:SetSize(80, 22)
+    FrameSetSize(resetBtn, 80, 22)
     resetBtn:SetPoint("TOPLEFT", dressingRoom, "BOTTOMLEFT", 15, -8)
     resetBtn:SetText(L["RESET"])
     resetBtn:SetScript("OnClick", function(self, button)
@@ -5861,7 +5893,7 @@ local function CreateMainFrame()
     end)
     
     local undressBtn = CreateFrame("Button", "$parentUndress", frame, "UIPanelButtonTemplate")
-    undressBtn:SetSize(80, 22)
+    FrameSetSize(undressBtn, 80, 22)
     undressBtn:SetPoint("LEFT", resetBtn, "RIGHT", 5, 0)
     undressBtn:SetText(L["UNDRESS"])
     undressBtn:SetScript("OnClick", function()
@@ -5871,7 +5903,7 @@ local function CreateMainFrame()
     
     -- Apply button - applies ALL selected items/enchants (cyan preview)
     local applyBtn = CreateFrame("Button", "$parentApply", frame, "UIPanelButtonTemplate")
-    applyBtn:SetSize(80, 22)
+    FrameSetSize(applyBtn, 80, 22)
     applyBtn:SetPoint("LEFT", undressBtn, "RIGHT", 5, 0)
     applyBtn:SetText(L["APPLY"])
     applyBtn:SetScript("OnClick", function()
@@ -5948,7 +5980,7 @@ local function CreateMainFrame()
     
     -- Create a container frame for the page text with background and border
     local pageContainer = CreateFrame("Frame", nil, frame)
-    pageContainer:SetSize(620, 30)
+    FrameSetSize(pageContainer, 620, 30)
     pageContainer:SetPoint("BOTTOM", previewGrid, "BOTTOM", 0, -35)
     
     -- Set background and border for the container
@@ -5972,7 +6004,7 @@ local function CreateMainFrame()
     -- Settings Button (top right corner of grid area)
     -- ========================================
     local settingsBtn = CreateFrame("Button", "TransmogSettingsButton", frame, "UIPanelButtonTemplate")
-    settingsBtn:SetSize(80, 22)
+    FrameSetSize(settingsBtn, 80, 22)
     settingsBtn:SetPoint("TOPRIGHT", previewGrid, "TOPRIGHT", 0, 25)
     settingsBtn:SetText(L["SETTINGS"] or "Settings")
     
@@ -5980,7 +6012,7 @@ local function CreateMainFrame()
     -- Sets Preview Button (left of Settings button)
     -- ========================================
     local setsPreviewBtn = CreateFrame("Button", "TransmogSetsPreviewButton", frame, "UIPanelButtonTemplate")
-    setsPreviewBtn:SetSize(80, 22)
+    FrameSetSize(setsPreviewBtn, 80, 22)
     setsPreviewBtn:SetPoint("RIGHT", settingsBtn, "LEFT", -5, 0)
     setsPreviewBtn:SetText(L["SETS_PREVIEW"] or "Sets")
     
@@ -6125,7 +6157,7 @@ local function CreateMinimapButton()
     TransmogDB.minimapPos = TransmogDB.minimapPos or 225
     
     local button = CreateFrame("Button", "TransmogMinimapButton", Minimap)
-    button:SetSize(32, 32)
+    FrameSetSize(button, 32, 32)
     button:SetFrameStrata("MEDIUM")
     button:SetFrameLevel(8)
     button:EnableMouse(true)
@@ -6135,24 +6167,24 @@ local function CreateMinimapButton()
     
     -- Button textures (standard minimap button style)
     local overlay = button:CreateTexture(nil, "OVERLAY")
-    overlay:SetSize(53, 53)
+    FrameSetSize(overlay, 53, 53)
     overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
     overlay:SetPoint("TOPLEFT", 0, 0)
     
     local background = button:CreateTexture(nil, "BACKGROUND")
-    background:SetSize(20, 20)
+    FrameSetSize(background, 20, 20)
     background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
     background:SetPoint("TOPLEFT", 7, -5)
     
     local icon = button:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(20, 20)
+    FrameSetSize(icon, 20, 20)
     icon:SetTexture("Interface\\Icons\\Spell_holy_divineprovidence")
     icon:SetPoint("TOPLEFT", 7, -6)
     button.icon = icon
     
     -- Highlight texture
     local highlight = button:CreateTexture(nil, "HIGHLIGHT")
-    highlight:SetSize(20, 20)
+    FrameSetSize(highlight, 20, 20)
     highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
     highlight:SetPoint("TOPLEFT", 7, -6)
     highlight:SetBlendMode("ADD")
