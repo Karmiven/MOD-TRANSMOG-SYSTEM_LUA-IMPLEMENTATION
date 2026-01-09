@@ -1457,9 +1457,6 @@ TRANSMOG_HANDLER.Removed = function(player, slot)
     -- Update grid to remove highlight
     UpdatePreviewGrid()
     
-    -- Refresh dressing room model
-    RefreshDressingRoomModel()
-    
     -- Update character frame borders if open
     if CharacterFrame and CharacterFrame:IsShown() and UpdateCharacterBorders then
         UpdateCharacterBorders()
@@ -3662,8 +3659,33 @@ local function CreateSlotButton(parent, slotName)
                     UpdatePreviewGrid()
                 end
                 
-                -- Refresh dressing room model
-                RefreshDressingRoomModel()
+                -- TryOn the real equipped item (with enchant if applicable) to show correct appearance
+                if mainFrame and mainFrame.dressingRoom then
+                    local mdl = mainFrame.dressingRoom.model
+                    if mdl then
+                        local invSlot = slotId + 1
+                        local realItemId = GetInventoryItemID("player", invSlot)
+                        if realItemId then
+                            -- Get enchant from item link if weapon slot
+                            local realEnchantId = nil
+                            if ENCHANT_ELIGIBLE_SLOTS[self.slotName] then
+                                local itemLink = GetInventoryItemLink("player", invSlot)
+                                if itemLink then
+                                    local enchantStr = itemLink:match("item:%d+:(%d+)")
+                                    realEnchantId = enchantStr and tonumber(enchantStr)
+                                    if realEnchantId == 0 then realEnchantId = nil end
+                                end
+                            end
+                            
+                            if realEnchantId then
+                                local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", realItemId, realEnchantId)
+                                mdl:TryOn(itemLinkWithEnchant)
+                            else
+                                mdl:TryOn(realItemId)
+                            end
+                        end
+                    end
+                end
             end
             
             for name, slotBtn in pairs(slotButtons) do
@@ -5956,28 +5978,71 @@ local function CreateMainFrame()
     resetBtn:SetText(L["RESET"])
     resetBtn:SetScript("OnClick", function(self, button)
         if button == "RightButton" then
-            -- Right-Click: Clear ALL active transmogs (like right-clicking slots individually)
+            -- Right-Click: Clear ALL active transmogs
             local clearedCount = 0
             for _, slotName in ipairs(SLOT_ORDER) do
                 local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
                 if slotId then
-                    -- Check if slot has active transmog (activeTransmogs uses slotId as key)
                     if activeTransmogs[slotId] then
                         RemoveTransmog(slotName)
+                        activeTransmogs[slotId] = nil
                         clearedCount = clearedCount + 1
                     end
-                    -- Also clear enchant if applicable
                     if activeEnchantTransmogs[slotId] then
                         RemoveEnchantTransmog(slotName)
+                        activeEnchantTransmogs[slotId] = nil
                         clearedCount = clearedCount + 1
                     end
                 end
             end
-            -- Also reset the dressing room
-            dressingRoom:Reset()
+            
             -- Clear all selections
             slotSelectedItems = {}
             slotSelectedEnchants = {}
+            selectedItemFrame = nil
+            selectedItemId = nil
+            selectedEnchantFrame = nil
+            selectedEnchantId = nil
+            
+            -- Update UI
+            UpdateSlotButtonIcons()
+            if currentTransmogMode == TRANSMOG_MODE_ENCHANT then
+                if UpdateEnchantGrid then UpdateEnchantGrid() end
+            else
+                UpdatePreviewGrid()
+            end
+            
+            -- TryOn all real equipped items (with enchants) to show correct appearances
+            local mdl = dressingRoom.model
+            if mdl then
+                for _, slotName in ipairs(SLOT_ORDER) do
+                    local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+                    if slotId then
+                        local invSlot = slotId + 1
+                        local realItemId = GetInventoryItemID("player", invSlot)
+                        if realItemId then
+                            -- Get enchant from item link if weapon slot
+                            local realEnchantId = nil
+                            if ENCHANT_ELIGIBLE_SLOTS[slotName] then
+                                local itemLink = GetInventoryItemLink("player", invSlot)
+                                if itemLink then
+                                    local enchantStr = itemLink:match("item:%d+:(%d+)")
+                                    realEnchantId = enchantStr and tonumber(enchantStr)
+                                    if realEnchantId == 0 then realEnchantId = nil end
+                                end
+                            end
+                            
+                            if realEnchantId then
+                                local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", realItemId, realEnchantId)
+                                mdl:TryOn(itemLinkWithEnchant)
+                            else
+                                mdl:TryOn(realItemId)
+                            end
+                        end
+                    end
+                end
+            end
+            
             PlaySound("igMainMenuOptionCheckBoxOn")
             if clearedCount > 0 then
                 print(string.format(L["CLEAR_ALL_SUCCESS"] or "|cff00ff00[Transmog]|r Cleared %d transmog slots", clearedCount))
