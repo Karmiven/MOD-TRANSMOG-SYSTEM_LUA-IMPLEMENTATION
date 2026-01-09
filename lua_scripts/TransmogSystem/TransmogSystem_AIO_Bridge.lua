@@ -2052,6 +2052,7 @@ if ENABLE_AIO_BRIDGE then
     -- Event IDs from Hooks.h (mod-ale/Eluna for AzerothCore)
 
     -- player event
+    local PLAYER_EVENT_ON_CHARACTER_DELETE          = 2  -- (event, guid)
     local PLAYER_EVENT_ON_LOGIN                     = 3  -- (event, player) 
     local PLAYER_EVENT_ON_LOGOUT                    = 4  -- (event, player)
     local PLAYER_EVENT_ON_EQUIP                     = 29 -- (event, player, item, bag, slot)
@@ -2220,6 +2221,21 @@ if ENABLE_AIO_BRIDGE then
             end
         )
     end
+
+    -- ============================================================================
+    -- PLAYER_EVENT_ON_CHARACTER_DELETE - Cleanup active transmog data
+    -- ============================================================================
+    
+    local function OnCharacterDelete(event, guid)
+        -- Delete all active transmog data for the deleted character
+        CharDBExecute(string.format(
+            "DELETE FROM mod_transmog_system_active WHERE guid = %d",
+            guid
+        ))
+        print(string.format("[Transmog] Cleaned up active transmog data for deleted character (GUID: %d)", guid))
+    end
+    
+    RegisterPlayerEvent(PLAYER_EVENT_ON_CHARACTER_DELETE, OnCharacterDelete)
     
     -- ============================================================================
     -- PLAYER_EVENT_ON_LOGIN - Scan inventory, quests and apply transmogs
