@@ -226,6 +226,9 @@ L["SETTING_HIDE_HAIR_TABARD"] = "Masquer cheveux/barbe sur l'aperçu des tabards
 -- Border Settings
 L["SETTINGS_UI"] = "Paramètres de l'interface utilisateur"
 L["SETTING_SHOW_TRANSMOG_BORDERS"] = "Afficher les bordures de transmogrification dans les cadres de Personnage/Inspection"
+L["SETTING_SHOW_MINIMAP_BUTTON"] = "Afficher le bouton de la minicarte"
+L["SETTING_SHOW_CHARFRAME_BUTTON"] = "Afficher le bouton sur le cadre du personnage"
+L["CHARFRAME_TOOLTIP"] = "|cffffffffClic:|r Ouvrir la fenêtre de Transmog"
 
 -- Settings Info
 L["SETTINGS_INFO_TEXT"] = "|cff888888Paramètres globaux|r s'appliquent à tous les personnages.\n|cff888888Paramètres par personnage|r (fond, mode d'aperçu) sont sauvegardés par personnage.\n\nLes paramètres sont sauvegardés automatiquement."

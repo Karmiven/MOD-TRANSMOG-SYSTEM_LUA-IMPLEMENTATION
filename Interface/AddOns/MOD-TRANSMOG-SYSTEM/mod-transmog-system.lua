@@ -70,6 +70,12 @@ local function InitializeSettings()
     if TransmogSettings.account.showInspectTransmogBorders == nil then
         TransmogSettings.account.showInspectTransmogBorders = true
     end
+    if TransmogSettings.account.showMinimapButton == nil then
+        TransmogSettings.account.showMinimapButton = true
+    end
+    if TransmogSettings.account.showCharacterFrameButton == nil then
+        TransmogSettings.account.showCharacterFrameButton = true
+    end
     
     -- Character-specific defaults (keyed by character name-realm)
     TransmogSettings.characters = TransmogSettings.characters or {}
@@ -535,6 +541,7 @@ local UpdateEnchantGrid
 local UpdateCollectionFilterDropdown  -- NEW
 local modeToggleButton
 local collectionFilterDropdown  -- NEW: Reference to the dropdown
+local UpdateButtonVisibility  -- For settings panel
 
 -- ============================================================================
 -- C_Timer Polyfill
@@ -5129,6 +5136,18 @@ local function CreateSettingsPanel(parent)
     
     CreateCheckbox(L["SETTING_SHOW_TRANSMOG_BORDERS"] or "Show transmog borders on Character/Inspect frames", "showInspectTransmogBorders", false)
     
+    -- Minimap button visibility
+    local minimapCheck = CreateCheckbox(L["SETTING_SHOW_MINIMAP_BUTTON"] or "Show minimap button", "showMinimapButton", false)
+    minimapCheck:HookScript("OnClick", function()
+        UpdateButtonVisibility()
+    end)
+    
+    -- Character frame button visibility
+    local charFrameCheck = CreateCheckbox(L["SETTING_SHOW_CHARFRAME_BUTTON"] or "Show button on Character Frame", "showCharacterFrameButton", false)
+    charFrameCheck:HookScript("OnClick", function()
+        UpdateButtonVisibility()
+    end)
+    
     -- ========================================
     -- SECTION: Info
     -- ========================================
@@ -5685,6 +5704,11 @@ local function CreateMainFrame()
     
     local closeBtn = CreateFrame("Button", "$parentClose", frame, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", -5, -5)
+    
+    -- Play close sound when frame is hidden (Escape or X button)
+    frame:SetScript("OnHide", function()
+        PlaySound("igCharacterInfoClose")
+    end)
     
     local slotContainer = CreateFrame("Frame", "$parentSlots", frame)
     slotContainer:SetPoint("TOPLEFT", 16, -55)
@@ -6268,8 +6292,109 @@ local function CreateMinimapButton()
     -- Initial position
     UpdatePosition()
     
+    -- Apply visibility setting
+    if IsSettingEnabled("showMinimapButton") then
+        button:Show()
+    else
+        button:Hide()
+    end
+    
     minimapButton = button
     return button
+end
+
+-- ============================================================================
+-- Character Frame Button
+-- ============================================================================
+
+local characterFrameButton = nil
+
+local function CreateCharacterFrameButton()
+    -- Similar to SpellBookSkillLineTab Icon
+    local tab = CreateFrame("Button", "TransmogCharacterFrameButton", CharacterFrame)
+    FrameSetSize(tab, 32, 32)
+    tab:EnableMouse(true)
+    tab:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+
+    tab:SetFrameStrata(CharacterFrame:GetFrameStrata())
+    tab:SetFrameLevel(CharacterFrame:GetFrameLevel() + 5)
+    tab:SetPoint("LEFT", CharacterFrame, "RIGHT", -32, 60)
+
+    local tabTexture = tab:CreateTexture(nil, "BACKGROUND")
+    tabTexture:SetTexture("Interface\\SpellBook\\SpellBook-SkillLineTab")
+    FrameSetSize(tabTexture, 64, 64)
+    tabTexture:SetPoint("LEFT", tab, "LEFT", 0, 0)
+    tab.TabTexture = tabTexture
+    
+    tab.Icon = tab:CreateTexture(nil, "ARTWORK")
+    tab.Icon:SetTexture("Interface\\Icons\\Spell_holy_divineprovidence")
+    FrameSetSize(tab.Icon, 32, 32)
+    tab.Icon:SetPoint("CENTER", tabTexture, "CENTER", -13, 5)
+
+    local highlight = tab:CreateTexture(nil, "HIGHLIGHT")
+    highlight:SetTexture("Interface\\Icons\\Spell_holy_divineprovidence")
+    FrameSetSize(highlight, 32, 32)
+    highlight:SetPoint("CENTER", tabTexture, "CENTER", -13, 5)
+    highlight:SetBlendMode("ADD")
+    tab.Highlight = highlight
+
+    tab:SetScript("OnClick", function(self, btn)
+        if btn == "LeftButton" then
+            PlaySound("igCharacterInfoTab")
+            if mainFrame then
+                if mainFrame:IsShown() then
+                    mainFrame:Hide()
+                else
+                    mainFrame:Show()
+                end
+            end
+        elseif btn == "RightButton" then
+            print(L["HELP_1"])
+            print(L["HELP_2"])
+            print(L["HELP_3"])
+        end
+    end)
+    
+    -- Tooltip
+    tab:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(L["TAB_NAME"] or "Transmog")
+        GameTooltip:AddLine(L["CHARFRAME_TOOLTIP"] or "|cffffffffClick:|r Open Transmog Window", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    
+    tab:SetScript("OnLeave", function(self)
+        GameTooltip:Hide()
+    end)
+    
+    -- Apply visibility setting
+    if IsSettingEnabled("showCharacterFrameButton") then
+        tab:Show()
+    else
+        tab:Hide()
+    end
+    
+    characterFrameButton = tab
+    return tab
+end
+
+-- Helper function to update button visibility (called when settings change)
+UpdateButtonVisibility = function()
+    if minimapButton then
+        if IsSettingEnabled("showMinimapButton") then
+            minimapButton:Show()
+        else
+            minimapButton:Hide()
+        end
+    end
+    
+    if characterFrameButton then
+        if IsSettingEnabled("showCharacterFrameButton") then
+            characterFrameButton:Show()
+        else
+            characterFrameButton:Hide()
+        end
+    end
 end
 
 
@@ -6327,6 +6452,7 @@ initFrame:SetScript("OnEvent", function(self, event)
         
         mainFrame = CreateMainFrame()
         CreateMinimapButton()
+        CreateCharacterFrameButton()
         
         currentSlot = "Head"
         currentSubclass = slotSelectedSubclass["Head"] or "All"
