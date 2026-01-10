@@ -543,6 +543,10 @@ local modeToggleButton
 local collectionFilterDropdown  -- NEW: Reference to the dropdown
 local UpdateButtonVisibility  -- For settings panel
 
+-- Panel visibility state (used to prevent pageText updates when sets panel is visible)
+local isSetsPreviewVisible = false
+local isSettingsVisible = false
+
 -- ============================================================================
 -- C_Timer Polyfill
 -- ============================================================================
@@ -1089,9 +1093,9 @@ local function LoadItemsForSlot(slotId, subclassName, qualityName, collectionFil
         currentPage = 1
         UpdatePreviewGrid()
         
-        -- Update page text
+        -- Update page text (only if not in sets preview mode)
         local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
-        if mainFrame and mainFrame.pageText then
+        if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
             mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages))
         end
     else
@@ -1100,7 +1104,7 @@ local function LoadItemsForSlot(slotId, subclassName, qualityName, collectionFil
         currentPage = 1
         UpdatePreviewGrid()
         
-        if mainFrame and mainFrame.pageText then
+        if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
             mainFrame.pageText:SetText("Loading cache...")
         end
         
@@ -1204,8 +1208,8 @@ TRANSMOG_HANDLER.FullCacheData = function(player, data)
     
     fullCacheReceivedChunks = fullCacheReceivedChunks + 1
     
-    -- Show loading progress
-    if mainFrame and mainFrame.pageText then
+    -- Show loading progress (only if not in sets preview mode)
+    if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
         mainFrame.pageText:SetText(string.format("Loading cache... %d/%d", 
             fullCacheReceivedChunks, fullCacheTotalChunks))
     end
@@ -1258,7 +1262,7 @@ TRANSMOG_HANDLER.FullCacheData = function(player, data)
             UpdatePreviewGrid()
             
             local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
-            if mainFrame and mainFrame.pageText then
+            if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
                 mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages))
             end
         end
@@ -1284,7 +1288,7 @@ TRANSMOG_HANDLER.FullCacheNotReady = function(player, data)
     pendingFullCacheRequest = false
     print("[Transmog] Server cache not ready yet - please try again shortly")
     
-    if mainFrame and mainFrame.pageText then
+    if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
         mainFrame.pageText:SetText("Server cache building... please wait")
     end
 end
@@ -3210,7 +3214,7 @@ UpdatePreviewGrid = function()
         gridScrollbar:SetValue(currentPage)
     end
     
-    if mainFrame and mainFrame.pageText then
+    if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
         mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages))
     end
 end
@@ -3324,7 +3328,7 @@ UpdateEnchantGrid = function()
         gridScrollbar:SetValue(currentEnchantPage)
     end
     
-    if mainFrame and mainFrame.pageText then
+    if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
         mainFrame.pageText:SetText(string.format(L["PAGE"], currentEnchantPage, totalPages) .. 
             " | " .. (L["ENCHANT_MODE"] or "Enchant Mode"))
     end
@@ -3932,9 +3936,9 @@ local function CreateSlotButton(parent, slotName)
             UpdateCollectionFilterDropdown()  -- NEW
             UpdatePreviewGrid()
             
-            -- Update page text
+            -- Update page text (only if not in sets preview mode)
             local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
-            if mainFrame and mainFrame.pageText then
+            if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
                 if #searchResults > 0 then
                     mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages) .. " | " .. 
                         string.format("Search: %d items (%d in %s)", #searchResults, #currentItems, currentSlot))
@@ -4175,6 +4179,20 @@ local function CreateDressingRoom(parent)
     model:SetUnit("player")
     model:SetRotation(0)
     frame.model = model
+    
+    -- Create border overlay frame on top for visual consistency
+    local borderOverlay = CreateFrame("Frame", nil, frame)
+    borderOverlay:SetAllPoints(frame)
+    borderOverlay:SetFrameLevel(model:GetFrameLevel() + 5)
+    borderOverlay:SetBackdrop({
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, 
+        tileSize = 16, 
+        edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    borderOverlay:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
+    frame.borderOverlay = borderOverlay
     
     -- Store initial position for proper reset
     local initialCameraDistance = 0
@@ -4651,9 +4669,9 @@ local function CreateSearchBar(parent, previewGrid)
         currentPage = 1
         UpdatePreviewGrid()
         
-        -- Update page text
+        -- Update page text (only if not in sets preview mode)
         local totalPages = math.max(1, math.ceil(#currentItems / itemsPerPage))
-        if mainFrame and mainFrame.pageText then
+        if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
             if #searchResults > 0 then
                 mainFrame.pageText:SetText(string.format(L["PAGE"], currentPage, totalPages) .. " | " .. 
                     string.format("Search: %d items (%d in %s)", #searchResults, #currentItems, currentSlot))
@@ -4680,7 +4698,7 @@ local function CreateSearchBar(parent, previewGrid)
             else
                 -- Cache not ready yet
                 print("[Transmog] Item cache not ready - please wait")
-                if mainFrame and mainFrame.pageText then
+                if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
                     mainFrame.pageText:SetText("Cache loading... please wait")
                 end
             end
@@ -4761,7 +4779,6 @@ end
 -- ============================================================================
 
 local settingsPanel = nil
-local isSettingsVisible = false
 
 local function CreateSettingsPanel(parent)
     local frame = CreateFrame("Frame", "$parentSettingsPanel", parent)
@@ -5551,7 +5568,6 @@ end
 -- ============================================================================
 
 local setsPreviewPanel = nil
-local isSetsPreviewVisible = false
 local setsPreviewModels = {}
 local setsPreviewSlotFrames = {}
 
@@ -5637,6 +5653,17 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
     -- Position model up and back to fit in frame (x=zoom, y=horizontal, z=vertical)
     model:SetPosition(-0.2, 0, -0.1)
     
+    -- Create border overlay frame on top for visual consistency
+    local borderOverlay = CreateFrame("Frame", nil, modelFrame)
+    borderOverlay:SetAllPoints(modelFrame)
+    borderOverlay:SetFrameLevel(modelFrame:GetFrameLevel() + 5)
+    borderOverlay:SetBackdrop({
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 12,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 }
+    })
+    borderOverlay:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+    
     -- Mouse interaction for rotating
     local isRotating = false
     local lastX = 0
@@ -5669,9 +5696,10 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
     
     model:SetScript("OnMouseWheel", function(self, delta)
         -- Zoom by adjusting camera distance
+        -- Limited range to minimize model overflow outside frame
         local x, y, z = self:GetPosition()
-        x = x + delta * 0.3
-        x = math.max(-1, math.min(3, x))
+        x = x + delta * 0.15
+        x = math.max(-0.3, math.min(0.5, x))  -- Strict limits for small frame
         self:SetPosition(x, y, z)
     end)
     
@@ -6949,7 +6977,7 @@ initFrame:SetScript("OnEvent", function(self, event)
                         RequestFullCacheFromServer()
                     end
                     
-                    if mainFrame and mainFrame.pageText then
+                    if mainFrame and mainFrame.pageText and not isSetsPreviewVisible then
                         mainFrame.pageText:SetText("Loading cache...")
                     end
                 end
