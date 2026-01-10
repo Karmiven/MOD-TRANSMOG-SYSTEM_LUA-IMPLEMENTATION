@@ -599,6 +599,26 @@ local function TextureSetColorTexture(tex, r, g, b, a)
     tex:SetTexture(r, g, b, a or 1)
 end
 
+-- HookScript alternative to not rely on !!!ClassicApi
+local function SafeHookScript(frame, scriptType, handler)
+    if not frame then return end
+    
+    -- If HookScript exists (ClassicAPI or newer client), use it
+    if frame.HookScript then
+        frame:HookScript(scriptType, handler)
+        return
+    end
+    
+    -- Manual hook for vanilla 3.3.5a
+    local oldScript = frame:GetScript(scriptType)
+    frame:SetScript(scriptType, function(self, ...)
+        if oldScript then
+            oldScript(self, ...)
+        end
+        handler(self, ...)
+    end)
+end
+
 -- ============================================================================
 -- Collection Functions
 -- ============================================================================
@@ -1526,6 +1546,11 @@ end
 
 -- Update inspect frame borders based on transmog data
 local function UpdateInspectBorders()
+    -- Verify InspectFrame exists and is shown
+    if not InspectFrame or not InspectFrame:IsShown() then
+        return
+    end
+    
     if not GetSetting("showInspectTransmogBorders") then
         -- Hide all borders if setting is disabled
         for _, border in pairs(inspectBorderFrames) do
@@ -1539,7 +1564,7 @@ local function UpdateInspectBorders()
     
     for equipSlot, inspectSlotName in pairs(EQUIP_SLOT_TO_INSPECT_SLOT) do
         local slotFrame = _G[inspectSlotName]
-        if slotFrame then
+        if slotFrame and slotFrame:IsShown() then
             -- Create border frame if it doesn't exist
             if not inspectBorderFrames[equipSlot] then
                 inspectBorderFrames[equipSlot] = CreateInspectBorderFrame(slotFrame)
@@ -1547,8 +1572,9 @@ local function UpdateInspectBorders()
             
             local border = inspectBorderFrames[equipSlot]
             if border then
-                local transmogItemId = transmogs[equipSlot]
-                local enchantId = enchants[equipSlot]
+                -- Handle both string and number keys (AIO serialization may convert keys)
+                local transmogItemId = transmogs[equipSlot] or transmogs[tostring(equipSlot)]
+                local enchantId = enchants[equipSlot] or enchants[tostring(equipSlot)]
                 
                 -- Show cyan border if any transmog is active (item, hidden, or enchant)
                 if transmogItemId ~= nil or (enchantId and enchantId > 0) then
@@ -1629,10 +1655,10 @@ end
 
 -- Hook character frame to update borders
 if CharacterFrame then
-    CharacterFrame:HookScript("OnShow", function()
+    SafeHookScript(CharacterFrame, "OnShow", function()
         UpdateCharacterBorders()
     end)
-    CharacterFrame:HookScript("OnHide", function()
+    SafeHookScript(CharacterFrame, "OnHide", function()
         for _, border in pairs(characterBorderFrames) do
             if border then border:Hide() end
         end
@@ -1644,20 +1670,53 @@ TRANSMOG_HANDLER.InspectTransmogs = function(player, data)
     if not data then return end
     
     inspectTransmogData = data
-    UpdateInspectBorders()
+    
+    -- Update borders immediately if InspectFrame is shown
+    if InspectFrame and InspectFrame:IsShown() then
+        UpdateInspectBorders()
+        
+        -- Also retry after a short delay in case slot frames weren't ready
+        C_Timer.After(0.2, function()
+            if InspectFrame and InspectFrame:IsShown() then
+                UpdateInspectBorders()
+            end
+        end)
+    end
 end
 
 -- Hook inspect frame events
 local inspectEventFrame = CreateFrame("Frame")
 inspectEventFrame:RegisterEvent("INSPECT_READY")
 inspectEventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+inspectEventFrame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 inspectEventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "INSPECT_READY" then
-        local inspectGuid = ...
-        -- Get the inspected unit's name
+        -- In 3.3.5a, INSPECT_READY fires when inspect data is ready
+        -- Try to get the inspected unit's name from InspectFrame or target
         if InspectFrame and InspectFrame:IsShown() then
-            local unit = InspectFrame.unit or "target"
-            local name = UnitName(unit)
+            -- Try different ways to get the inspected unit
+            local name = nil
+            
+            -- Method 1: Use lastInspectedUnit from our hook
+            if lastInspectedUnit and UnitExists(lastInspectedUnit) then
+                name = UnitName(lastInspectedUnit)
+            end
+            
+            -- Method 2: Check InspectFrame.unit (if it exists)
+            if not name and InspectFrame.unit then
+                name = UnitName(InspectFrame.unit)
+            end
+            
+            -- Method 3: Fall back to target if we're inspecting target
+            if not name and UnitExists("target") and CheckInteractDistance("target", 1) then
+                name = UnitName("target")
+            end
+            
+            -- Method 4: Check mouseover
+            if not name and UnitExists("mouseover") then
+                name = UnitName("mouseover")
+            end
+            
             if name then
                 -- Request transmog data from server
                 AIO.Msg():Add("TRANSMOG", "RequestInspectTransmogs", name):Send()
@@ -1666,15 +1725,121 @@ inspectEventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "PLAYER_TARGET_CHANGED" then
         -- Clear borders when target changes (will be re-requested on INSPECT_READY)
         ClearInspectBorders()
+    elseif event == "UNIT_INVENTORY_CHANGED" then
+        -- This fires when inspected unit's inventory is loaded
+        local unit = ...
+        if unit and InspectFrame and InspectFrame:IsShown() then
+            -- Check if this is the inspected unit
+            if lastInspectedUnit == unit or (InspectFrame.unit and InspectFrame.unit == unit) then
+                -- Update borders if we have data
+                if inspectTransmogData and inspectTransmogData.transmogs then
+                    UpdateInspectBorders()
+                end
+            end
+        end
     end
 end)
 
--- Also hook InspectFrame hide to clear borders
-if InspectFrame then
-    InspectFrame:HookScript("OnHide", function()
+-- Track the last inspected unit for fallback
+local lastInspectedUnit = nil
+
+-- Hook NotifyInspect to capture which unit is being inspected
+if NotifyInspect then
+    local originalNotifyInspect = NotifyInspect
+    NotifyInspect = function(unit)
+        lastInspectedUnit = unit
+        return originalNotifyInspect(unit)
+    end
+end
+
+-- Hook InspectUnit (used by right-click inspect menu)
+if InspectUnit then
+    local originalInspectUnit = InspectUnit
+    InspectUnit = function(unit)
+        lastInspectedUnit = unit
+        -- Request transmog data after a short delay
+        C_Timer.After(0.2, function()
+            if InspectFrame and InspectFrame:IsShown() then
+                local name = nil
+                if lastInspectedUnit and UnitExists(lastInspectedUnit) then
+                    name = UnitName(lastInspectedUnit)
+                elseif UnitExists("target") then
+                    name = UnitName("target")
+                end
+                if name then
+                    AIO.Msg():Add("TRANSMOG", "RequestInspectTransmogs", name):Send()
+                end
+            end
+        end)
+        return originalInspectUnit(unit)
+    end
+end
+
+-- InspectFrame is loaded on-demand in 3.3.5a via Blizzard_InspectUI
+-- We need to hook it when the addon loads, not at our addon's load time
+local inspectFrameHooked = false
+
+local function SetupInspectFrameHooks()
+    if inspectFrameHooked or not InspectFrame then return end
+    inspectFrameHooked = true
+    
+    SafeHookScript(InspectFrame, "OnHide", function()
         ClearInspectBorders()
+        lastInspectedUnit = nil
+    end)
+    
+    -- Hook OnShow to request transmog data when inspect frame opens
+    SafeHookScript(InspectFrame, "OnShow", function()
+        -- Delay to ensure unit data and slot frames are available
+        C_Timer.After(0.3, function()
+            if InspectFrame and InspectFrame:IsShown() then
+                local name = nil
+                
+                -- Try to get the inspected unit's name using multiple methods
+                -- Method 1: Use lastInspectedUnit from our NotifyInspect/InspectUnit hook
+                if lastInspectedUnit and UnitExists(lastInspectedUnit) then
+                    name = UnitName(lastInspectedUnit)
+                end
+                
+                -- Method 2: Check InspectFrame.unit (if it exists)
+                if not name and InspectFrame.unit and UnitExists(InspectFrame.unit) then
+                    name = UnitName(InspectFrame.unit)
+                end
+                
+                -- Method 3: Fall back to target
+                if not name and UnitExists("target") then
+                    name = UnitName("target")
+                end
+                
+                if name then
+                    AIO.Msg():Add("TRANSMOG", "RequestInspectTransmogs", name):Send()
+                end
+            end
+        end)
+        
+        -- Also update borders after a longer delay in case data already cached
+        C_Timer.After(0.5, function()
+            if InspectFrame and InspectFrame:IsShown() and inspectTransmogData and inspectTransmogData.transmogs then
+                UpdateInspectBorders()
+            end
+        end)
     end)
 end
+
+-- Try to hook immediately if InspectFrame already exists
+if InspectFrame then
+    SetupInspectFrameHooks()
+end
+
+-- Also hook ADDON_LOADED to catch when Blizzard_InspectUI loads
+local inspectAddonLoader = CreateFrame("Frame")
+inspectAddonLoader:RegisterEvent("ADDON_LOADED")
+inspectAddonLoader:SetScript("OnEvent", function(self, event, addonName)
+    if addonName == "Blizzard_InspectUI" then
+        SetupInspectFrameHooks()
+        self:UnregisterEvent("ADDON_LOADED")
+    end
+end)
 
 
 TRANSMOG_HANDLER.AppearanceCheck = function(player, data)
@@ -2163,21 +2328,21 @@ local function OnTooltipCleared(tooltip)
     tooltipProcessedItem[tooltipName] = nil
 end
 
-GameTooltip:HookScript("OnTooltipSetItem", OnTooltipSetItem)
-GameTooltip:HookScript("OnTooltipCleared", OnTooltipCleared)
-ItemRefTooltip:HookScript("OnTooltipSetItem", OnTooltipSetItem)
-ItemRefTooltip:HookScript("OnTooltipCleared", OnTooltipCleared)
-ShoppingTooltip1:HookScript("OnTooltipSetItem", OnTooltipSetItem)
-ShoppingTooltip1:HookScript("OnTooltipCleared", OnTooltipCleared)
-ShoppingTooltip2:HookScript("OnTooltipSetItem", OnTooltipSetItem)
-ShoppingTooltip2:HookScript("OnTooltipCleared", OnTooltipCleared)
+SafeHookScript(GameTooltip, "OnTooltipSetItem", OnTooltipSetItem)
+SafeHookScript(GameTooltip, "OnTooltipCleared", OnTooltipCleared)
+SafeHookScript(ItemRefTooltip, "OnTooltipSetItem", OnTooltipSetItem)
+SafeHookScript(ItemRefTooltip, "OnTooltipCleared", OnTooltipCleared)
+SafeHookScript(ShoppingTooltip1, "OnTooltipSetItem", OnTooltipSetItem)
+SafeHookScript(ShoppingTooltip1, "OnTooltipCleared", OnTooltipCleared)
+SafeHookScript(ShoppingTooltip2, "OnTooltipSetItem", OnTooltipSetItem)
+SafeHookScript(ShoppingTooltip2, "OnTooltipCleared", OnTooltipCleared)
 
 -- Hook AtlasLoot tooltips if available (delayed to ensure addon is loaded)
 local function HookAtlasLootTooltips()
     -- AtlasLoot uses AtlasLootTooltip
     if AtlasLootTooltip then
-        AtlasLootTooltip:HookScript("OnTooltipSetItem", OnTooltipSetItem)
-        AtlasLootTooltip:HookScript("OnTooltipCleared", OnTooltipCleared)
+        SafeHookScript(AtlasLootTooltip, "OnTooltipSetItem", OnTooltipSetItem)
+        SafeHookScript(AtlasLootTooltip, "OnTooltipCleared", OnTooltipCleared)
     end
     -- Some versions use GameTooltip but we already hooked that
 end
@@ -4181,6 +4346,7 @@ local function CreateDressingRoom(parent)
     frame.model = model
     
     -- Create border overlay frame on top for visual consistency
+    -- Note: 3D models in WoW 3.3.5a render after all UI, so border won't clip model overflow
     local borderOverlay = CreateFrame("Frame", nil, frame)
     borderOverlay:SetAllPoints(frame)
     borderOverlay:SetFrameLevel(model:GetFrameLevel() + 5)
@@ -5486,13 +5652,13 @@ local function CreateSettingsPanel(parent)
     
     -- Minimap button visibility
     local minimapCheck = CreateCheckbox(L["SETTING_SHOW_MINIMAP_BUTTON"] or "Show minimap button", "showMinimapButton", false)
-    minimapCheck:HookScript("OnClick", function()
+    SafeHookScript(minimapCheck, "OnClick", function()
         UpdateButtonVisibility()
     end)
     
     -- Character frame button visibility
     local charFrameCheck = CreateCheckbox(L["SETTING_SHOW_CHARFRAME_BUTTON"] or "Show button on Character Frame", "showCharacterFrameButton", false)
-    charFrameCheck:HookScript("OnClick", function()
+    SafeHookScript(charFrameCheck, "OnClick", function()
         UpdateButtonVisibility()
     end)
     
