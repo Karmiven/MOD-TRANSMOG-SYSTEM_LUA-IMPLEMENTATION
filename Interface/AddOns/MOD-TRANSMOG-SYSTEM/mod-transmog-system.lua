@@ -1127,7 +1127,17 @@ local function SaveSetToServer(setNumber, setName)
             slotData[equipSlot] = itemId
         end
     end
-    AIO.Msg():Add("TRANSMOG", "SaveSet", setNumber, setName, slotData):Send()
+    
+    -- Gather currently selected enchants from slotSelectedEnchants
+    local enchantData = {}
+    for slotName, enchantId in pairs(slotSelectedEnchants) do
+        local equipSlot = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+        if equipSlot and enchantId then
+            enchantData[equipSlot] = enchantId
+        end
+    end
+    
+    AIO.Msg():Add("TRANSMOG", "SaveSet", setNumber, setName, slotData, enchantData):Send()
 end
 
 local function LoadSetFromServer(setNumber)
@@ -1138,8 +1148,8 @@ local function DeleteSetFromServer(setNumber)
     AIO.Msg():Add("TRANSMOG", "DeleteSet", setNumber):Send()
 end
 
-local function ApplySetToServer(setNumber)
-    AIO.Msg():Add("TRANSMOG", "ApplySet", setNumber):Send()
+local function ApplySetToServer(setNumber, applyHiddenSlots)
+    AIO.Msg():Add("TRANSMOG", "ApplySet", setNumber, applyHiddenSlots or false):Send()
 end
 
 -- ============================================================================
@@ -1752,7 +1762,8 @@ TRANSMOG_HANDLER.SetSaved = function(player, data)
     -- Update local cache
     transmogSets[data.setNumber] = {
         name = data.setName,
-        slots = data.slots or {}
+        slots = data.slots or {},
+        enchants = data.enchants or {}
     }
     
     print(string.format(L["SET_SAVED"], data.setName))
@@ -1772,16 +1783,26 @@ TRANSMOG_HANDLER.SetLoaded = function(player, data)
     if not data then return end
     
     local setData = data.slots or {}
+    local enchantData = data.enchants or {}
     
     -- Clear current selections
     slotSelectedItems = {}
+    slotSelectedEnchants = {}
     
     -- Apply loaded set items to preview and selection
     for slotName, config in pairs(SLOT_CONFIG) do
         local equipSlot = config.equipSlot
-        local itemId = setData[equipSlot]
+        
+        -- Try both number and string keys for items
+        local itemId = setData[equipSlot] or setData[tostring(equipSlot)]
         if itemId and itemId > 0 then
             slotSelectedItems[slotName] = itemId
+        end
+        
+        -- Load enchant selections for weapon slots (try both number and string keys)
+        local enchantId = enchantData[equipSlot] or enchantData[tostring(equipSlot)]
+        if enchantId and enchantId > 0 then
+            slotSelectedEnchants[slotName] = enchantId
         end
     end
     
@@ -1822,11 +1843,45 @@ TRANSMOG_HANDLER.SetApplied = function(player, data)
     -- Update active transmogs with applied set
     if data.appliedSlots then
         for slot, itemId in pairs(data.appliedSlots) do
-            activeTransmogs[slot] = itemId
+            local slotNum = tonumber(slot)
+            if slotNum then
+                activeTransmogs[slotNum] = itemId
+            end
         end
     end
     
-    print(string.format(L["SET_APPLIED"], data.setName or "Set"))
+    -- Update active transmogs with hidden slots (value = 0)
+    if data.hiddenSlots then
+        for slot, _ in pairs(data.hiddenSlots) do
+            local slotNum = tonumber(slot)
+            if slotNum then
+                activeTransmogs[slotNum] = 0
+            end
+        end
+    end
+    
+    -- Update active enchant transmogs with applied set
+    if data.appliedEnchants then
+        for slot, enchantId in pairs(data.appliedEnchants) do
+            local slotNum = tonumber(slot)
+            if slotNum then
+                activeEnchantTransmogs[slotNum] = enchantId
+            end
+        end
+    end
+    
+    -- Build message
+    local msg = string.format(L["SET_APPLIED"], data.setName or "Set")
+    local hiddenCount = 0
+    if data.hiddenSlots then
+        for _ in pairs(data.hiddenSlots) do
+            hiddenCount = hiddenCount + 1
+        end
+    end
+    if hiddenCount > 0 then
+        msg = msg .. string.format(" (%d hidden)", hiddenCount)
+    end
+    print(msg)
     
     -- Update UI
     UpdateSlotButtonIcons()
@@ -1851,26 +1906,51 @@ TRANSMOG_HANDLER.PlayerAppearanceCopied = function(player, data)
     
     -- Clear current selections
     slotSelectedItems = {}
+    slotSelectedEnchants = {}
     
     -- Apply copied items to preview selection
     local copiedCount = 0
+    local hiddenCount = 0
+    local enchantCount = 0
     for slotName, config in pairs(SLOT_CONFIG) do
         local equipSlot = config.equipSlot
-        local itemId = data.slots and data.slots[equipSlot]
-        if itemId and itemId > 0 then
-            slotSelectedItems[slotName] = itemId
-            copiedCount = copiedCount + 1
+        
+        -- Try both number and string keys for items
+        local itemId = data.slots and (data.slots[equipSlot] or data.slots[tostring(equipSlot)])
+        if itemId ~= nil then
+            if itemId == 0 then
+                -- Slot is hidden
+                slotSelectedItems[slotName] = 0
+                hiddenCount = hiddenCount + 1
+            elseif itemId > 0 then
+                slotSelectedItems[slotName] = itemId
+                copiedCount = copiedCount + 1
+            end
+        end
+        
+        -- Also copy enchant visuals for weapon slots (try both key types)
+        local enchantId = data.enchants and (data.enchants[equipSlot] or data.enchants[tostring(equipSlot)])
+        if enchantId and enchantId > 0 then
+            slotSelectedEnchants[slotName] = enchantId
+            enchantCount = enchantCount + 1
         end
     end
     
-    -- Update dressing room with copied appearance
+    -- Update dressing room with copied appearance (including enchants)
     RefreshDressingRoomModel(slotSelectedItems)
     
     -- Update grid to show cyan highlights
     UpdatePreviewGrid()
     
     -- Show success message
-    print(string.format(L["COPY_PLAYER_SUCCESS"] or "|cff00ff00[Transmog]|r Copied %d items from %s's appearance.", copiedCount, data.playerName or "player"))
+    local msg = string.format(L["COPY_PLAYER_SUCCESS"] or "|cff00ff00[Transmog]|r Copied %d items from %s's appearance.", copiedCount, data.playerName or "player")
+    if hiddenCount > 0 then
+        msg = msg .. string.format(" (%d hidden)", hiddenCount)
+    end
+    if enchantCount > 0 then
+        msg = msg .. string.format(" (%d enchant visuals)", enchantCount)
+    end
+    print(msg)
     print(L["COPY_PLAYER_HINT"] or "|cff00ff00[Transmog]|r Use the Save button to save this as a set.")
 end
 
@@ -1930,7 +2010,10 @@ TRANSMOG_HANDLER.EnchantRemoved = function(player, slot)
     activeEnchantTransmogs[slot] = nil
     print("|cff00ff00[Transmog]|r Enchant visual removed")
     UpdateSlotButtonIcons()
-    if UpdateEnchantGrid then UpdateEnchantGrid() end
+    -- Only update enchant grid if we're actually in enchant mode
+    if currentTransmogMode == TRANSMOG_MODE_ENCHANT then
+        if UpdateEnchantGrid then UpdateEnchantGrid() end
+    end
     -- Update character frame borders if open
     if CharacterFrame and CharacterFrame:IsShown() and UpdateCharacterBorders then
         UpdateCharacterBorders()
@@ -2139,7 +2222,10 @@ local qualityDropdown
 -- ============================================================================
 
 -- Refreshes dressing room model with current equipped gear + active transmogs
--- @param previewItems: optional table of {slotName = itemId} for preview mode (e.g., loaded set)
+-- @param previewItems: optional table of {slotName = itemId} for preview mode
+--                      itemId > 0 = show this item
+--                      itemId == 0 = hide this slot
+--                      nil = show active/equipped item
 RefreshDressingRoomModel = function(previewItems)
     -- Wait for mainFrame to be initialized
     if not mainFrame or not mainFrame.dressingRoom then
@@ -2157,39 +2243,61 @@ RefreshDressingRoomModel = function(previewItems)
         mdl:SetUnit("player")
         
         if previewItems then
-            -- Preview mode: undress and show only preview items
+            -- Preview mode: build combined view from equipped + active + preview
             mdl:Undress()
             C_Timer.After(0.05, function()
-                for slotName, itemId in pairs(previewItems) do
-                    if itemId then
-                        -- Check if weapon slot has an enchant visual to preserve
-                        local enchantIdToPreserve = nil
-                        if ENCHANT_ELIGIBLE_SLOTS[slotName] then
-                            local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
-                            local invSlot = slotId + 1  -- WoW inventory slots are 1-indexed
-                            -- Priority: selected enchant > active enchant > real equipped enchant
+                -- Process all slots
+                for _, slotName in ipairs(SLOT_ORDER) do
+                    local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+                    if slotId then
+                        local invSlot = slotId + 1
+                        local itemToShow = nil
+                        local enchantToShow = nil
+                        
+                        -- Check if this slot has a preview override
+                        local previewItemId = previewItems[slotName]
+                        
+                        if previewItemId == 0 then
+                            -- Explicitly hidden - don't show anything for this slot
+                            itemToShow = nil
+                        elseif previewItemId and previewItemId > 0 then
+                            -- Preview item specified
+                            itemToShow = previewItemId
+                        elseif activeTransmogs[slotId] and activeTransmogs[slotId] > 0 then
+                            -- Active transmog
+                            itemToShow = activeTransmogs[slotId]
+                        else
+                            -- Fall back to real equipped item
+                            itemToShow = GetInventoryItemID("player", invSlot)
+                        end
+                        
+                        -- Get enchant for weapon slots
+                        if itemToShow and ENCHANT_ELIGIBLE_SLOTS[slotName] then
+                            -- Priority: selected enchant > active enchant > real enchant
                             if slotSelectedEnchants[slotName] then
-                                enchantIdToPreserve = slotSelectedEnchants[slotName]
+                                enchantToShow = slotSelectedEnchants[slotName]
                             elseif activeEnchantTransmogs[slotId] then
-                                enchantIdToPreserve = activeEnchantTransmogs[slotId]
+                                enchantToShow = activeEnchantTransmogs[slotId]
                             else
-                                -- Fallback: get real enchant from equipped item link
                                 local itemLink = GetInventoryItemLink("player", invSlot)
                                 if itemLink then
                                     local _, _, enchantStr = string.find(itemLink, "item:%d+:(%d+)")
                                     local realEnchant = enchantStr and tonumber(enchantStr)
                                     if realEnchant and realEnchant > 0 then
-                                        enchantIdToPreserve = realEnchant
+                                        enchantToShow = realEnchant
                                     end
                                 end
                             end
                         end
                         
-                        if enchantIdToPreserve then
-                            local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", itemId, enchantIdToPreserve)
-                            mdl:TryOn(itemLinkWithEnchant)
-                        else
-                            mdl:TryOn(itemId)
+                        -- TryOn the item if we have one
+                        if itemToShow and itemToShow > 0 then
+                            if enchantToShow and enchantToShow > 0 then
+                                local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", itemToShow, enchantToShow)
+                                mdl:TryOn(itemLinkWithEnchant)
+                            else
+                                mdl:TryOn(itemToShow)
+                            end
                         end
                     end
                 end
@@ -2198,37 +2306,76 @@ RefreshDressingRoomModel = function(previewItems)
             end)
         else
             -- Normal mode: show equipped gear + active transmogs
+            -- First undress to clear any stale previews, then rebuild from active transmogs
+            mdl:Undress()
             C_Timer.After(0.05, function()
-                for slotId, itemId in pairs(activeTransmogs) do
-                    if itemId then
-                        -- Check if weapon slot (15=MainHand, 16=SecondaryHand) has an enchant visual
-                        local enchantIdToPreserve = nil
-                        if slotId == 15 or slotId == 16 then
-                            local slotName = (slotId == 15) and "MainHand" or "SecondaryHand"
-                            local invSlot = slotId + 1  -- WoW inventory slots are 1-indexed
-                            -- Priority: selected enchant > active enchant > real equipped enchant
-                            if slotSelectedEnchants[slotName] then
-                                enchantIdToPreserve = slotSelectedEnchants[slotName]
-                            elseif activeEnchantTransmogs[slotId] then
-                                enchantIdToPreserve = activeEnchantTransmogs[slotId]
-                            else
-                                -- Fallback: get real enchant from equipped item link
-                                local itemLink = GetInventoryItemLink("player", invSlot)
-                                if itemLink then
-                                    local _, _, enchantStr = string.find(itemLink, "item:%d+:(%d+)")
-                                    local realEnchant = enchantStr and tonumber(enchantStr)
-                                    if realEnchant and realEnchant > 0 then
-                                        enchantIdToPreserve = realEnchant
+                -- Process ALL slots to handle both transmogs and hidden slots
+                for _, slotName in ipairs(SLOT_ORDER) do
+                    local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+                    if slotId then
+                        local invSlot = slotId + 1
+                        local activeItemId = activeTransmogs[slotId]
+                        
+                        if activeItemId == 0 then
+                            -- Hidden slot - already undressed, nothing to do
+                        elseif activeItemId and activeItemId > 0 then
+                            -- Active transmog - TryOn the item
+                            local enchantIdToPreserve = nil
+                            if slotId == 15 or slotId == 16 then
+                                -- Priority: selected enchant > active enchant > real equipped enchant
+                                if slotSelectedEnchants[slotName] then
+                                    enchantIdToPreserve = slotSelectedEnchants[slotName]
+                                elseif activeEnchantTransmogs[slotId] then
+                                    enchantIdToPreserve = activeEnchantTransmogs[slotId]
+                                else
+                                    local itemLink = GetInventoryItemLink("player", invSlot)
+                                    if itemLink then
+                                        local _, _, enchantStr = string.find(itemLink, "item:%d+:(%d+)")
+                                        local realEnchant = enchantStr and tonumber(enchantStr)
+                                        if realEnchant and realEnchant > 0 then
+                                            enchantIdToPreserve = realEnchant
+                                        end
                                     end
                                 end
                             end
-                        end
-                        
-                        if enchantIdToPreserve then
-                            local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", itemId, enchantIdToPreserve)
-                            mdl:TryOn(itemLinkWithEnchant)
+                            
+                            if enchantIdToPreserve then
+                                local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", activeItemId, enchantIdToPreserve)
+                                mdl:TryOn(itemLinkWithEnchant)
+                            else
+                                mdl:TryOn(activeItemId)
+                            end
                         else
-                            mdl:TryOn(itemId)
+                            -- No active transmog - show real equipped item if any
+                            local realItemId = GetInventoryItemID("player", invSlot)
+                            if realItemId then
+                                local enchantIdToPreserve = nil
+                                if ENCHANT_ELIGIBLE_SLOTS[slotName] then
+                                    -- Priority: selected enchant > active enchant > real equipped enchant
+                                    if slotSelectedEnchants[slotName] then
+                                        enchantIdToPreserve = slotSelectedEnchants[slotName]
+                                    elseif activeEnchantTransmogs[slotId] then
+                                        enchantIdToPreserve = activeEnchantTransmogs[slotId]
+                                    else
+                                        local itemLink = GetInventoryItemLink("player", invSlot)
+                                        if itemLink then
+                                            local _, _, enchantStr = string.find(itemLink, "item:%d+:(%d+)")
+                                            local realEnchant = enchantStr and tonumber(enchantStr)
+                                            if realEnchant and realEnchant > 0 then
+                                                enchantIdToPreserve = realEnchant
+                                            end
+                                        end
+                                    end
+                                end
+                                
+                                if enchantIdToPreserve then
+                                    local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", realItemId, enchantIdToPreserve)
+                                    mdl:TryOn(itemLinkWithEnchant)
+                                else
+                                    mdl:TryOn(realItemId)
+                                end
+                            end
+                            -- No equipped item = slot stays undressed (correct behavior)
                         end
                     end
                 end
@@ -2513,21 +2660,35 @@ local function CreateItemFrame(parent, index)
                     ApplyTransmog(currentSlot, 0)
                     PlaySound("igMainMenuOptionCheckBoxOn")
                 else
+                    -- Clear previous selection from ALL item frames (including other hide options)
+                    for _, itemFrame in ipairs(itemFrames) do
+                        if itemFrame.selectionBorder then
+                            itemFrame.selectionBorder:Hide()
+                            -- Restore backdrop border based on active state
+                            if itemFrame.isActive then
+                                itemFrame:SetBackdropBorderColor(0, 1, 0, 1)  -- Green for active
+                            else
+                                itemFrame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)  -- Default gray
+                            end
+                        end
+                    end
+                    
                     -- Select hide option
                     slotSelectedItems[currentSlot] = 0
                     selectedItemId = 0
                     selectedItemFrame = f
                     f.selectionBorder:Show()
-                    f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected
                     
-                    if dressingRoom then
-                        -- Undress the slot to preview hide
-                        local slotId = SLOT_NAME_TO_EQUIP_SLOT[currentSlot]
-                        if slotId then
-                            dressingRoom:UndressSlot(slotId + 1)  -- WoW slots are 1-indexed for UndressSlot
-                        end
-                        PlaySound("igMainMenuOptionCheckBoxOn")
+                    -- Set backdrop border - active takes priority over selected
+                    if f.isActive then
+                        f:SetBackdropBorderColor(0, 1, 0, 1)  -- Green for active
+                    else
+                        f:SetBackdropBorderColor(0, 1, 1, 1)  -- Cyan for selected
                     end
+                    
+                    -- Update dressing room to preview hide
+                    RefreshDressingRoomModel(slotSelectedItems)
+                    PlaySound("igMainMenuOptionCheckBoxOn")
                 end
             end
             return
@@ -2566,9 +2727,9 @@ local function CreateItemFrame(parent, index)
                     -- Let server validate collection status (respects ALLOW_UNCOLLECTED_TRANSMOG setting)
                     ApplyTransmog(currentSlot, transmogItemId)
                 else
-                    -- Clear previous selection for this slot from ALL item frames
+                    -- Clear previous selection for this slot from ALL item frames (including hide option)
                     for _, itemFrame in ipairs(itemFrames) do
-                        if itemFrame.itemId and itemFrame.selectionBorder then
+                        if itemFrame.selectionBorder then
                             itemFrame.selectionBorder:Hide()
                             -- Restore backdrop border based on active state
                             if itemFrame.isActive then
@@ -2882,6 +3043,43 @@ local function UpdateItemFrame(frame, itemData, slotName)
         
         -- Mark as collected (always available)
         frame.collectedIcon:Show()
+        
+        -- Check if this slot is currently HIDDEN (activeTransmogs[slotId] == 0)
+        local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+        local activeItemId = activeTransmogs[slotId]
+        local isActive = (activeItemId ~= nil and activeItemId == 0)
+        frame.isActive = isActive
+        
+        -- Check if hide is selected for this slot
+        local isSelected = (slotSelectedItems[slotName] ~= nil and slotSelectedItems[slotName] == 0)
+        
+        -- Handle selection border
+        if isSelected then
+            frame.selectionBorder:Show()
+            selectedItemFrame = frame
+            selectedItemId = 0
+        else
+            frame.selectionBorder:Hide()
+        end
+        
+        -- Handle active state - backdrop border color
+        -- Priority: Active (green) > Selected (cyan) > Default (gray)
+        if isActive then
+            frame.activeGlow:Show()
+            frame.activeText:Show()
+            frame:SetBackdropBorderColor(0, 1, 0, 1)
+            frame:SetBackdropColor(0.1, 0.2, 0.1, 1)
+        elseif isSelected then
+            frame.activeGlow:Hide()
+            frame.activeText:Hide()
+            frame:SetBackdropBorderColor(0, 1, 1, 1)
+            frame:SetBackdropColor(0.15, 0.15, 0.15, 1)
+        else
+            frame.activeGlow:Hide()
+            frame.activeText:Hide()
+            frame:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+            frame:SetBackdropColor(0.15, 0.15, 0.15, 1)
+        end
         
         return
     end
@@ -4254,17 +4452,33 @@ local function CreateSetControls(parent, dressingRoomFrame)
     FrameSetSize(applyBtn, 70, 22)
     applyBtn:SetPoint("LEFT", deleteBtn, "RIGHT", 2, 0)
     applyBtn:SetText(L["SET_APPLY"] or "Apply")
-    applyBtn:SetScript("OnClick", function()
+    applyBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    applyBtn:SetScript("OnClick", function(self, button)
         -- Use our tracked selectedSetNumber instead of UIDropDownMenu_GetSelectedValue
         if selectedSetNumber and selectedSetNumber > 0 and transmogSets[selectedSetNumber] then
-            ApplySetToServer(selectedSetNumber)
+            -- Check setting for applying hidden slots
+            local applyHidden = GetSetting("applySetHiddenSlots") == true
+            -- Shift+click toggles the behavior
+            if IsShiftKeyDown() then
+                applyHidden = not applyHidden
+            end
+            ApplySetToServer(selectedSetNumber, applyHidden)
         else
             print(L["SET_SELECT_FIRST"] or "|cffff0000[Transmog]|r Select a set first.")
         end
     end)
     applyBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText(L["SET_APPLY_TOOLTIP"] or "Apply this set as active transmog\n(Only collected appearances will be applied)")
+        GameTooltip:SetText(L["SET_APPLY"] or "Apply Set")
+        GameTooltip:AddLine(L["SET_APPLY_TOOLTIP"] or "Apply this set as active transmog", 1, 1, 1, true)
+        GameTooltip:AddLine(" ")
+        local settingEnabled = GetSetting("applySetHiddenSlots") == true
+        if settingEnabled then
+            GameTooltip:AddLine(L["SET_APPLY_HIDDEN_ON"] or "Hidden slots will be applied (armor only)", 0.5, 1, 0.5)
+        else
+            GameTooltip:AddLine(L["SET_APPLY_HIDDEN_OFF"] or "Hidden slots will be ignored", 1, 1, 0.5)
+        end
+        GameTooltip:AddLine(L["SET_APPLY_SHIFT"] or "Shift+Click to toggle this behavior", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
     applyBtn:SetScript("OnLeave", GameTooltip_Hide)
@@ -5266,6 +5480,49 @@ local function CreateSettingsPanel(parent)
     end)
     
     -- ========================================
+    -- SECTION: Sets
+    -- ========================================
+    yOffset = yOffset - sectionSpacing
+    CreateSectionHeader(L["SETTINGS_SETS"] or "Set Management")
+    yOffset = yOffset - 5
+    
+    -- Apply hidden slots setting (default: false for backwards compatibility)
+    local applyHiddenCheck = CreateFrame("CheckButton", nil, content, "UICheckButtonTemplate")
+    applyHiddenCheck:SetPoint("TOPLEFT", 20, yOffset)
+    FrameSetSize(applyHiddenCheck, 24, 24)
+    
+    local applyHiddenText = applyHiddenCheck:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    applyHiddenText:SetPoint("LEFT", applyHiddenCheck, "RIGHT", 5, 0)
+    applyHiddenText:SetText(L["SETTING_APPLY_SET_HIDDEN_SLOTS"] or "Apply hidden slots when applying sets (armor only)")
+    
+    applyHiddenCheck.settingKey = "applySetHiddenSlots"
+    
+    -- Default to FALSE (backwards compatible - ignore hidden slots)
+    local currentApplyHidden = GetSetting("applySetHiddenSlots")
+    applyHiddenCheck:SetChecked(currentApplyHidden == true)
+    
+    applyHiddenCheck:SetScript("OnClick", function(self)
+        local checked = self:GetChecked() == 1 or self:GetChecked() == true
+        SetSetting("applySetHiddenSlots", checked, false)
+        PlaySound("igMainMenuOptionCheckBoxOn")
+    end)
+    
+    applyHiddenCheck:SetScript("OnShow", function(self)
+        local value = GetSetting("applySetHiddenSlots")
+        self:SetChecked(value == true)
+    end)
+    
+    applyHiddenCheck:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(L["SETTING_APPLY_SET_HIDDEN_SLOTS"] or "Apply hidden slots")
+        GameTooltip:AddLine(L["SETTING_APPLY_SET_HIDDEN_SLOTS_DESC"] or "When enabled, applying a set will also hide armor slots that are marked as hidden in the set.\nWeapon slots are never force-hidden.\nShift+Click on Apply to toggle this temporarily.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    applyHiddenCheck:SetScript("OnLeave", GameTooltip_Hide)
+    
+    yOffset = yOffset - itemSpacing
+    
+    -- ========================================
     -- SECTION: Info
     -- ========================================
     yOffset = yOffset - sectionSpacing
@@ -5375,7 +5632,7 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
     local model = CreateFrame("DressUpModel", nil, modelFrame)
     model:SetPoint("TOPLEFT", modelFrame, "TOPLEFT", 2, -2)
     model:SetPoint("BOTTOMRIGHT", modelFrame, "BOTTOMRIGHT", -2, 2)
-    model:SetUnit("player")
+    -- Don't call SetUnit here - defer to ApplySetToModel to avoid showing player's real gear
     model:SetRotation(0)
     -- Position model up and back to fit in frame (x=zoom, y=horizontal, z=vertical)
     model:SetPosition(-0.2, 0, -0.1)
@@ -5444,8 +5701,8 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
         icon:SetAllPoints()
         icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         
-        -- Get item from set data
-        local itemId = setData and setData.slots and setData.slots[slotInfo.equipSlot]
+        -- Get item from set data (try both number and string keys)
+        local itemId = setData and setData.slots and (setData.slots[slotInfo.equipSlot] or setData.slots[tostring(slotInfo.equipSlot)])
         if itemId and itemId > 0 then
             local _, _, _, _, _, _, _, _, _, itemTexture = GetItemInfo(itemId)
             if itemTexture then
@@ -5466,7 +5723,7 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
             end)
             iconFrame:SetScript("OnLeave", GameTooltip_Hide)
         else
-            -- Empty slot - show slot texture
+            -- Empty slot or hidden slot (itemId == 0 or nil) - show slot texture
             icon:SetTexture("Interface\\PaperDoll\\UI-PaperDoll-Slot-" .. (SLOT_CONFIG[slotInfo.name] and SLOT_CONFIG[slotInfo.name].texture or "Chest"))
             icon:SetVertexColor(0.3, 0.3, 0.3, 0.5)
         end
@@ -5507,6 +5764,7 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
                 end)
             end
         else
+            -- Empty or hidden slot
             nameText:SetText("|cff666666" .. (L[slotInfo.name] or slotInfo.name) .. "|r")
         end
         
@@ -5517,19 +5775,37 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
     
     -- Function to apply set items to model
     function entryFrame:ApplySetToModel(setDataToApply)
-        if not setDataToApply or not setDataToApply.slots then return end
+        if not setDataToApply then return end
         
-        -- Reset model
-        self.model:Undress()
+        local slots = setDataToApply.slots or {}
+        local enchantData = setDataToApply.enchants or {}
+        
+        -- Step 1: Set unit to get player model shape
         self.model:SetUnit("player")
         
-        -- Apply each item via TryOn
+        -- Step 2: After model loads, undress completely
         C_Timer.After(0.05, function()
-            for equipSlot, itemId in pairs(setDataToApply.slots) do
-                if itemId and itemId > 0 then
-                    self.model:TryOn(itemId)
+            self.model:Undress()
+            
+            -- Step 3: After undress, apply ONLY items from the set (not player's gear)
+            C_Timer.After(0.05, function()
+                -- Undress again to be sure (sometimes first undress doesn't stick)
+                self.model:Undress()
+                
+                -- Now apply only the items in this set
+                for equipSlot, itemId in pairs(slots) do
+                    -- Only TryOn items with valid IDs (skip 0 = hidden, skip nil = not in set)
+                    if itemId and itemId > 0 then
+                        local enchantId = enchantData[equipSlot] or enchantData[tostring(equipSlot)]
+                        if enchantId and enchantId > 0 then
+                            local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", itemId, enchantId)
+                            self.model:TryOn(itemLinkWithEnchant)
+                        else
+                            self.model:TryOn(itemId)
+                        end
+                    end
                 end
-            end
+            end)
         end)
         
         -- Update name
@@ -5539,11 +5815,12 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
         
         -- Update slot icons and names
         for _, slotInfo in ipairs(SET_PREVIEW_SLOT_ORDER) do
-            local itemId = setDataToApply.slots[slotInfo.equipSlot]
+            local itemId = slots[slotInfo.equipSlot] or slots[tostring(slotInfo.equipSlot)]
             local iconFrame = self.slotIcons[slotInfo.equipSlot]
             local nameText = self.slotNames[slotInfo.equipSlot]
             
             if itemId and itemId > 0 then
+                -- Normal item
                 local _, _, quality, _, _, _, _, _, _, itemTexture = GetItemInfo(itemId)
                 if itemTexture then
                     iconFrame.icon:SetTexture(itemTexture)
@@ -5567,6 +5844,7 @@ local function CreateSetPreviewEntry(parent, index, setNumber, setData)
                 end)
                 iconFrame:SetScript("OnLeave", GameTooltip_Hide)
             else
+                -- Empty or hidden slot (not in set or itemId == 0)
                 iconFrame.icon:SetTexture("Interface\\PaperDoll\\UI-PaperDoll-Slot-" .. (SLOT_CONFIG[slotInfo.name] and SLOT_CONFIG[slotInfo.name].texture or "Chest"))
                 iconFrame.icon:SetVertexColor(0.3, 0.3, 0.3, 0.5)
                 nameText:SetText("|cff666666" .. (L[slotInfo.name] or slotInfo.name) .. "|r")
@@ -5743,6 +6021,11 @@ local function CreateSetsPreviewPanel(parent)
     frame:EnableMouseWheel(true)
     frame:SetScript("OnMouseWheel", function(self, delta)
         self:ChangeSetPage(-delta)
+    end)
+    
+    -- OnShow: refresh sets preview to ensure models show correct set data
+    frame:SetScript("OnShow", function(self)
+        self:RefreshSetsPreview()
     end)
     
     return frame
@@ -5987,6 +6270,9 @@ local function CreateMainFrame()
     resetBtn:SetScript("OnClick", function(self, button)
         if button == "RightButton" then
             -- Right-Click: Clear ALL active transmogs
+            -- Preserve current mode
+            local preservedMode = currentTransmogMode
+            
             local clearedCount = 0
             for _, slotName in ipairs(SLOT_ORDER) do
                 local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
@@ -6012,6 +6298,9 @@ local function CreateMainFrame()
             selectedEnchantFrame = nil
             selectedEnchantId = nil
             
+            -- Restore mode in case anything changed it
+            currentTransmogMode = preservedMode
+            
             -- Update UI
             UpdateSlotButtonIcons()
             if currentTransmogMode == TRANSMOG_MODE_ENCHANT then
@@ -6020,35 +6309,45 @@ local function CreateMainFrame()
                 UpdatePreviewGrid()
             end
             
-            -- TryOn all real equipped items (with enchants) to show correct appearances
+            -- Reset dressing room to show only real equipped items
+            -- First undress to clear any stale previews, then TryOn only equipped items
             local mdl = dressingRoom.model
             if mdl then
-                for _, slotName in ipairs(SLOT_ORDER) do
-                    local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
-                    if slotId then
-                        local invSlot = slotId + 1
-                        local realItemId = GetInventoryItemID("player", invSlot)
-                        if realItemId then
-                            -- Get enchant from item link if weapon slot
-                            local realEnchantId = nil
-                            if ENCHANT_ELIGIBLE_SLOTS[slotName] then
-                                local itemLink = GetInventoryItemLink("player", invSlot)
-                                if itemLink then
-                                    local enchantStr = itemLink:match("item:%d+:(%d+)")
-                                    realEnchantId = enchantStr and tonumber(enchantStr)
-                                    if realEnchantId == 0 then realEnchantId = nil end
+                mdl:SetUnit("player")
+                C_Timer.After(0.01, function()
+                    mdl:Undress()
+                    C_Timer.After(0.05, function()
+                        for _, slotName in ipairs(SLOT_ORDER) do
+                            local slotId = SLOT_NAME_TO_EQUIP_SLOT[slotName]
+                            if slotId then
+                                local invSlot = slotId + 1
+                                local realItemId = GetInventoryItemID("player", invSlot)
+                                if realItemId then
+                                    -- Get enchant from item link if weapon slot
+                                    local realEnchantId = nil
+                                    if ENCHANT_ELIGIBLE_SLOTS[slotName] then
+                                        local itemLink = GetInventoryItemLink("player", invSlot)
+                                        if itemLink then
+                                            local enchantStr = itemLink:match("item:%d+:(%d+)")
+                                            realEnchantId = enchantStr and tonumber(enchantStr)
+                                            if realEnchantId == 0 then realEnchantId = nil end
+                                        end
+                                    end
+                                    
+                                    if realEnchantId then
+                                        local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", realItemId, realEnchantId)
+                                        mdl:TryOn(itemLinkWithEnchant)
+                                    else
+                                        mdl:TryOn(realItemId)
+                                    end
                                 end
-                            end
-                            
-                            if realEnchantId then
-                                local itemLinkWithEnchant = string.format("item:%d:%d:0:0:0:0:0:0:0", realItemId, realEnchantId)
-                                mdl:TryOn(itemLinkWithEnchant)
-                            else
-                                mdl:TryOn(realItemId)
+                                -- No equipped item = slot stays undressed (correct behavior)
                             end
                         end
-                    end
-                end
+                        mdl:SetPosition(0, 0, 0)
+                        mdl:SetFacing(0)
+                    end)
+                end)
             end
             
             PlaySound("igMainMenuOptionCheckBoxOn")

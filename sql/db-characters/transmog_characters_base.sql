@@ -8,6 +8,7 @@
 -- Drop existing tables if they exist (for clean reinstall)
 DROP TABLE IF EXISTS `mod_transmog_system_collection`;
 DROP TABLE IF EXISTS `mod_transmog_system_active`;
+DROP TABLE IF EXISTS `mod_transmog_system_enchantment`;
 DROP TABLE IF EXISTS `mod_transmog_system_sets`;
 
 -- ============================================================================
@@ -53,7 +54,6 @@ COMMENT='Active transmog appearances per character';
 -- Static data for all available enchantment visuals
 -- Only includes one representative enchant per unique ItemVisual to avoid duplicates
 -- ============================================================================
-DROP TABLE IF EXISTS `mod_transmog_system_enchantment`;
 CREATE TABLE IF NOT EXISTS `mod_transmog_system_enchantment` (
     `id` INT UNSIGNED NOT NULL COMMENT 'Enchantment ID (SpellItemEnchantment)',
     `item_visual` INT UNSIGNED NOT NULL COMMENT 'ItemVisual ID for client display',
@@ -170,6 +170,9 @@ CREATE TABLE IF NOT EXISTS `mod_transmog_system_sets` (
     `slot_mainhand` INT UNSIGNED NOT NULL DEFAULT 0,
     `slot_offhand` INT UNSIGNED NOT NULL DEFAULT 0,
     `slot_ranged` INT UNSIGNED NOT NULL DEFAULT 0,
+    `enchant_mainhand` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Enchant visual for mainhand',
+    `enchant_offhand` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Enchant visual for offhand',
+    `enchant_ranged` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Enchant visual for ranged',
     `create_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `update_date` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`account_id`, `set_number`),
@@ -272,4 +275,13 @@ COMMENT='Saved transmog outfit sets';
 -- ALTER TABLE `mod_transmog_system_active` MODIFY `enchant_id` INT UNSIGNED DEFAULT NULL COMMENT 'Enchant visual ID (NULL=none, >0=enchant)';
 -- UPDATE `mod_transmog_system_active` SET `enchant_id` = NULL WHERE `enchant_id` = 0;
 -- UPDATE `mod_transmog_system_active` SET `item_id` = NULL WHERE `item_id` = 0 AND `slot` IN (15, 16, 17);
+-- ============================================================================
+
+-- ============================================================================
+-- MIGRATION2: For existing databases, add enchant columns to sets table
+-- Run these if you already have the sets table without enchant columns
+-- ============================================================================
+-- ALTER TABLE `mod_transmog_system_sets` ADD COLUMN `enchant_mainhand` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Enchant visual for mainhand' AFTER `slot_ranged`;
+-- ALTER TABLE `mod_transmog_system_sets` ADD COLUMN `enchant_offhand` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Enchant visual for offhand' AFTER `enchant_mainhand`;
+-- ALTER TABLE `mod_transmog_system_sets` ADD COLUMN `enchant_ranged` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Enchant visual for ranged' AFTER `enchant_offhand`;
 -- ============================================================================

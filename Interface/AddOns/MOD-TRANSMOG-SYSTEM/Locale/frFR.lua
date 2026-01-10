@@ -19,6 +19,8 @@ L["MINIMAP_TOOLTIP_RIGHT"] = "|cffffffffClic Droit:|r Afficher l'aide"
 L["MINIMAP_TOOLTIP_DRAG"] = "|cffffffffGlisser:|r Déplacer le bouton"
 L["APPLY"] = "Appliquer"
 L["APPLY_APPEARANCE_SHIFT_CLICK"] = "|cff00ff00Shift+Clic:|r Appliquer l'apparence"
+L["HIDE_APPEARANCE"] = "Cacher l'apparence"
+L["HIDE_APPEARANCE_DESC"] = "Rendre cet emplacement d'équipement invisible"
 L["PREVIEW_APPEARANCE_CLICK"] = "|cff00ff00Clic:|r Aperçu"
 L["MINIMAP_BUTTON_TITLE"] = "Transmo Collection"
 
@@ -312,6 +314,14 @@ L["COPY_PLAYER_PROMPT"] = "Entrez le nom du joueur à copier\n(ou ciblez d'abord
 L["COPY"] = "Copier"
 L["COPY_PLAYER_SUCCESS"] = "|cff00ff00[Transmog]|r %d objets copiés depuis l'apparence de %s."
 L["COPY_PLAYER_HINT"] = "|cff00ff00[Transmog]|r Utilisez le bouton Sauver pour enregistrer celui-ci comme ensemble."
+
+-- Set Management Settings
+L["SETTINGS_SETS"] = "Gestion des Ensembles"
+L["SETTING_APPLY_SET_HIDDEN_SLOTS"] = "Appliquer les emplacements masqués lors de l'application des ensembles (armure uniquement)"
+L["SETTING_APPLY_SET_HIDDEN_SLOTS_DESC"] = "Lorsque activé, l'application d'un ensemble masquera également les emplacements d'armure marqués comme masqués dans l'ensemble.\nLes emplacements d'armes ne sont jamais masqués de force.\nMaj+Clic sur Appliquer pour basculer temporairement."
+L["SET_APPLY_HIDDEN_ON"] = "Les emplacements masqués seront appliqués (armure uniquement)"
+L["SET_APPLY_HIDDEN_OFF"] = "Les emplacements masqués seront ignorés"
+L["SET_APPLY_SHIFT"] = "Maj+Clic pour basculer ce comportement"
 
 -- Merge by Display ID feature
 L["SETTING_MERGE_BY_DISPLAY_ID"] = "Fusionner les objets par apparence (Display ID)"

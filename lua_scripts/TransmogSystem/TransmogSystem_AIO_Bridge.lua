@@ -502,24 +502,35 @@ if ENABLE_AIO_BRIDGE then
     
     -- Check if player has ANY item with the same display ID in their collection
     -- This enables display ID based transmog application
+    -- Uses cache to avoid world.item_template queries that may fail with permission errors
     local function HasAppearanceByDisplayIdAsync(accountId, displayId, callback)
-        -- Query joins collection with item_template to find any collected item with matching displayId
-        CharDBQueryAsync(
-            string.format(
-                "SELECT c.item_id FROM mod_transmog_system_collection c " ..
-                "INNER JOIN world.item_template it ON c.item_id = it.entry " ..
-                "WHERE c.account_id = %d AND it.displayid = %d LIMIT 1",
-                accountId, displayId
-            ),
-            function(Q)
-                if Q then
-                    -- Return the first collected item ID with this display ID
-                    callback(true, Q:GetUInt32(0))
-                else
-                    callback(false, nil)
-                end
+        -- First, try to use cache to get all items with this displayId
+        if SERVER_ITEM_CACHE.isReady and SERVER_ITEM_CACHE.byDisplayId and SERVER_ITEM_CACHE.byDisplayId[displayId] then
+            local itemsWithDisplayId = SERVER_ITEM_CACHE.byDisplayId[displayId]
+            if itemsWithDisplayId and #itemsWithDisplayId > 0 then
+                -- Build a query to check if player has ANY of these items
+                local itemIdList = table.concat(itemsWithDisplayId, ",")
+                CharDBQueryAsync(
+                    string.format(
+                        "SELECT item_id FROM mod_transmog_system_collection WHERE account_id = %d AND item_id IN (%s) LIMIT 1",
+                        accountId, itemIdList
+                    ),
+                    function(Q)
+                        if Q then
+                            callback(true, Q:GetUInt32(0))
+                        else
+                            callback(false, nil)
+                        end
+                    end
+                )
+                return
             end
-        )
+        end
+        
+        -- Fallback: cache not ready or displayId not found in cache
+        -- Return false without querying world.item_template to avoid permission errors
+        DebugPrint(string.format("[Transmog] HasAppearanceByDisplayIdAsync: cache miss for displayId %d, returning false", displayId))
+        callback(false, nil)
     end
     
     -- Get display ID for an item from cache
@@ -1712,6 +1723,13 @@ if ENABLE_AIO_BRIDGE then
         [18] = "slot_tabard",
     }
     
+    -- Enchant slot to column mapping (weapon slots only)
+    local SLOT_TO_ENCHANT_COLUMN = {
+        [15] = "enchant_mainhand",
+        [16] = "enchant_offhand",
+        [17] = "enchant_ranged",
+    }
+    
     local COLUMN_TO_SLOT = {}
     for slot, column in pairs(SLOT_TO_COLUMN) do
         COLUMN_TO_SLOT[column] = slot
@@ -1723,7 +1741,8 @@ if ENABLE_AIO_BRIDGE then
             string.format(
                 "SELECT set_number, set_name, slot_head, slot_shoulder, slot_back, slot_chest, " ..
                 "slot_shirt, slot_tabard, slot_wrist, slot_hands, slot_waist, slot_legs, slot_feet, " ..
-                "slot_mainhand, slot_offhand, slot_ranged FROM mod_transmog_system_sets WHERE account_id = %d",
+                "slot_mainhand, slot_offhand, slot_ranged, enchant_mainhand, enchant_offhand, enchant_ranged " ..
+                "FROM mod_transmog_system_sets WHERE account_id = %d",
                 accountId
             ),
             function(Q)
@@ -1748,9 +1767,15 @@ if ENABLE_AIO_BRIDGE then
                             [16] = Q:GetUInt32(14),  -- offhand
                             [17] = Q:GetUInt32(15),  -- ranged
                         }
+                        local enchants = {
+                            [15] = Q:GetUInt32(16),  -- enchant_mainhand
+                            [16] = Q:GetUInt32(17),  -- enchant_offhand
+                            [17] = Q:GetUInt32(18),  -- enchant_ranged
+                        }
                         sets[setNumber] = {
                             name = setName,
-                            slots = slots
+                            slots = slots,
+                            enchants = enchants
                         }
                     until not Q:NextRow()
                 end
@@ -1759,7 +1784,7 @@ if ENABLE_AIO_BRIDGE then
         )
     end
     
-    local function SavePlayerSet(accountId, setNumber, setName, slotData)
+    local function SavePlayerSet(accountId, setNumber, setName, slotData, enchantData)
         -- Build the INSERT/REPLACE query
         local columns = {"account_id", "set_number", "set_name"}
         local values = {accountId, setNumber, "'" .. setName:gsub("'", "''") .. "'"}
@@ -1769,6 +1794,13 @@ if ENABLE_AIO_BRIDGE then
             table.insert(columns, column)
             local itemId = slotData[slot] or 0
             table.insert(values, itemId)
+        end
+        
+        -- Add enchant columns and values
+        for slot, column in pairs(SLOT_TO_ENCHANT_COLUMN) do
+            table.insert(columns, column)
+            local enchantId = enchantData and enchantData[slot] or 0
+            table.insert(values, enchantId)
         end
         
         local sql = string.format(
@@ -1802,7 +1834,7 @@ if ENABLE_AIO_BRIDGE then
     end
     
     -- Save a new set or update existing
-    TRANSMOG_HANDLER.SaveSet = function(player, setNumber, setName, slotData)
+    TRANSMOG_HANDLER.SaveSet = function(player, setNumber, setName, slotData, enchantData)
         if not setNumber or setNumber < 1 or setNumber > 12 then
             AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
             return
@@ -1828,12 +1860,24 @@ if ENABLE_AIO_BRIDGE then
             end
         end
         
-        SavePlayerSet(accountId, setNumber, setName, convertedSlotData)
+        -- Convert enchant data keys to numbers if needed
+        local convertedEnchantData = {}
+        if enchantData then
+            for slot, enchantId in pairs(enchantData) do
+                local slotNum = tonumber(slot)
+                if slotNum and enchantId and enchantId > 0 then
+                    convertedEnchantData[slotNum] = enchantId
+                end
+            end
+        end
+        
+        SavePlayerSet(accountId, setNumber, setName, convertedSlotData, convertedEnchantData)
         
         AIO.Msg():Add("TRANSMOG", "SetSaved", {
             setNumber = setNumber,
             setName = setName,
-            slots = convertedSlotData
+            slots = convertedSlotData,
+            enchants = convertedEnchantData
         }):Send(player)
     end
     
@@ -1856,7 +1900,8 @@ if ENABLE_AIO_BRIDGE then
             SafeSendToPlayer(playerName, AIO.Msg():Add("TRANSMOG", "SetLoaded", {
                 setNumber = setNumber,
                 setName = sets[setNumber].name,
-                slots = sets[setNumber].slots
+                slots = sets[setNumber].slots,
+                enchants = sets[setNumber].enchants
             }))
         end)
     end
@@ -1875,11 +1920,14 @@ if ENABLE_AIO_BRIDGE then
     end
     
     -- Apply a set (only items in collection will be applied) - async version
-    TRANSMOG_HANDLER.ApplySet = function(player, setNumber)
+    TRANSMOG_HANDLER.ApplySet = function(player, setNumber, applyHiddenSlots)
         if not setNumber or setNumber < 1 or setNumber > 12 then
             AIO.Msg():Add("TRANSMOG", "SetError", "Invalid set number"):Send(player)
             return
         end
+        
+        -- Weapon slots should never be force-hidden
+        local WEAPON_SLOTS = { [15] = true, [16] = true, [17] = true }
         
         local accountId = player:GetAccountId()
         local guid = player:GetGUIDLow()
@@ -1923,8 +1971,11 @@ if ENABLE_AIO_BRIDGE then
                 
                 local setData = sets[setNumber]
                 local appliedSlots = {}
+                local appliedEnchants = {}
+                local hiddenSlots = {}
                 local skippedCount = 0
                 
+                -- Apply item transmogs
                 for slot, itemId in pairs(setData.slots) do
                     if itemId and itemId > 0 then
                         local itemIdToUse = nil
@@ -1962,6 +2013,37 @@ if ENABLE_AIO_BRIDGE then
                             skippedCount = skippedCount + 1
                             DebugPrint(string.format("[Transmog] ApplySet: Skipped slot %d, item %d not in collection", slot, itemId))
                         end
+                    elseif itemId == 0 and applyHiddenSlots and not WEAPON_SLOTS[slot] then
+                        -- Slot is explicitly hidden in set and user wants to apply hidden slots
+                        -- (but never force-hide weapon slots)
+                        SaveActiveTransmog(guid, slot, 0)
+                        
+                        -- Apply hide visual if item equipped
+                        local equippedItem = onlinePlayer:GetItemByPos(255, slot)
+                        if equippedItem and ENABLE_TRANSMOG_APPLY_TRANSMOG_VISUAL then
+                            ApplyTransmogVisual(onlinePlayer, slot, 0)
+                        end
+                        
+                        hiddenSlots[slot] = true
+                        DebugPrint(string.format("[Transmog] ApplySet: Hidden slot %d", slot))
+                    end
+                end
+                
+                -- Apply enchant transmogs (no collection check needed - these are visual IDs)
+                if setData.enchants then
+                    for slot, enchantId in pairs(setData.enchants) do
+                        if enchantId and enchantId > 0 then
+                            -- Save to active enchant transmogs
+                            SaveEnchantTransmog(guid, slot, enchantId)
+                            
+                            -- Apply enchant visual if item equipped
+                            local equippedItem = onlinePlayer:GetItemByPos(255, slot)
+                            if equippedItem then
+                                ApplyEnchantVisual(onlinePlayer, slot, enchantId)
+                            end
+                            
+                            appliedEnchants[slot] = enchantId
+                        end
                     end
                 end
                 
@@ -1969,6 +2051,8 @@ if ENABLE_AIO_BRIDGE then
                     setNumber = setNumber,
                     setName = setData.name,
                     appliedSlots = appliedSlots,
+                    appliedEnchants = appliedEnchants,
+                    hiddenSlots = hiddenSlots,
                     skippedCount = skippedCount
                 }))
             end)
@@ -1993,6 +2077,9 @@ if ENABLE_AIO_BRIDGE then
         -- These are Armor class (4) subclasses 7-10
         local RELIC_SUBCLASSES = { [7] = true, [8] = true, [9] = true, [10] = true }
         
+        -- Weapon slots that can legitimately be empty (don't force hide)
+        local WEAPON_SLOTS = { [15] = true, [16] = true, [17] = true }
+        
         -- Helper to check if an item is transmog-eligible for ranged slot
         local function IsRangedTransmogEligible(item)
             if not item then return false end
@@ -2008,30 +2095,62 @@ if ENABLE_AIO_BRIDGE then
         
         -- Get target player's visible equipment
         local slots = {}
+        local enchants = {}
         local equipmentSlots = {0, 2, 3, 4, 5, 6, 7, 8, 9, 14, 15, 16, 17, 18}  -- All transmog-eligible slots
         
         for _, slotId in ipairs(equipmentSlots) do
             local item = targetPlayer:GetItemByPos(255, slotId)
+            local field = PLAYER_VISIBLE_ITEM_FIELDS[slotId]
+            
             if item then
                 -- Skip ranged slot if item is a relic (not transmog-eligible)
                 if slotId == 17 and not IsRangedTransmogEligible(item) then
                     -- Skip this slot - relics can't be transmogged
                 else
                     -- Check if target has an active transmog on this slot
-                    local transmogEntry = nil
-                    local field = PLAYER_VISIBLE_ITEM_FIELDS[slotId]
                     if field then
-                        transmogEntry = targetPlayer:GetUInt32Value(field)
-                        if transmogEntry and transmogEntry > 0 then
+                        local transmogEntry = targetPlayer:GetUInt32Value(field)
+                        local actualItemId = item:GetEntry()
+                        
+                        -- transmogEntry == 0 means slot is HIDDEN
+                        -- transmogEntry == actualItemId means no transmog (showing real item) OR transmogged to same item
+                        -- transmogEntry ~= actualItemId and > 0 means transmogged to different item
+                        if transmogEntry ~= nil and transmogEntry == 0 then
+                            -- Slot is explicitly HIDDEN (transmog set to 0)
+                            slots[slotId] = 0
+                        elseif transmogEntry and transmogEntry > 0 then
+                            -- Has visual - could be transmog or original, copy the visual
                             slots[slotId] = transmogEntry
                         else
-                            -- No transmog, use the actual item
-                            slots[slotId] = item:GetEntry()
+                            -- Fallback: use actual item
+                            slots[slotId] = actualItemId
                         end
                     else
                         -- No visual field, use actual item
                         slots[slotId] = item:GetEntry()
                     end
+                    
+                    -- Also check for enchant visual on weapon slots
+                    local enchantField = PLAYER_VISIBLE_ENCHANTMENT_FIELDS[slotId]
+                    if enchantField then
+                        local enchantVisual = targetPlayer:GetUInt32Value(enchantField)
+                        if enchantVisual and enchantVisual > 0 then
+                            enchants[slotId] = enchantVisual
+                        else
+                            -- No transmog enchant, try to get real enchant from item
+                            local realEnchantId = item:GetEnchantmentId(0)  -- Permanent enchant slot
+                            if realEnchantId and realEnchantId > 0 then
+                                enchants[slotId] = realEnchantId
+                            end
+                        end
+                    end
+                end
+            else
+                -- No item equipped in this slot
+                -- For armor slots, copy as hidden (0) since the slot appears empty visually
+                -- For weapon slots, don't include - they can legitimately be empty
+                if not WEAPON_SLOTS[slotId] then
+                    slots[slotId] = 0  -- Hide empty armor slots
                 end
             end
         end
@@ -2039,7 +2158,8 @@ if ENABLE_AIO_BRIDGE then
         -- Send the copied appearance to the requesting player
         AIO.Msg():Add("TRANSMOG", "PlayerAppearanceCopied", {
             playerName = targetPlayerName,
-            slots = slots
+            slots = slots,
+            enchants = enchants
         }):Send(player)
         
         DebugPrint(string.format("[Transmog] %s copied appearance from %s", player:GetName(), targetPlayerName))

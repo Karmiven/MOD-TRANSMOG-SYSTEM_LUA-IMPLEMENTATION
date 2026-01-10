@@ -19,6 +19,8 @@ L["MINIMAP_TOOLTIP_RIGHT"] = "|cffffffffRight-Click:|r Show Help"
 L["MINIMAP_TOOLTIP_DRAG"] = "|cffffffffDrag:|r Move Button"
 L["APPLY"] = "Apply"
 L["APPLY_APPEARANCE_SHIFT_CLICK"] = "|cff00ff00Shift+Click:|r Apply appearance"
+L["HIDE_APPEARANCE"] = "Hide appearance"
+L["HIDE_APPEARANCE_DESC"] = "Make this equipment slot invisible"
 L["PREVIEW_APPEARANCE_CLICK"] = "|cff00ff00Click:|r Preview"
 L["MINIMAP_BUTTON_TITLE"] = "Transmog Collection"
 
@@ -312,6 +314,14 @@ L["COPY_PLAYER_PROMPT"] = "Enter player name to copy appearance\n(or target a pl
 L["COPY"] = "Copy"
 L["COPY_PLAYER_SUCCESS"] = "|cff00ff00[Transmog]|r Copied %d items from %s's appearance."
 L["COPY_PLAYER_HINT"] = "|cff00ff00[Transmog]|r Use the Save button to save this as a set."
+
+-- Set Management Settings
+L["SETTINGS_SETS"] = "Set Management"
+L["SETTING_APPLY_SET_HIDDEN_SLOTS"] = "Apply hidden slots when applying sets (armor only)"
+L["SETTING_APPLY_SET_HIDDEN_SLOTS_DESC"] = "When enabled, applying a set will also hide armor slots that are marked as hidden in the set.\nWeapon slots are never force-hidden.\nShift+Click on Apply to toggle this temporarily."
+L["SET_APPLY_HIDDEN_ON"] = "Hidden slots will be applied (armor only)"
+L["SET_APPLY_HIDDEN_OFF"] = "Hidden slots will be ignored"
+L["SET_APPLY_SHIFT"] = "Shift+Click to toggle this behavior"
 
 -- Merge by Display ID feature
 L["SETTING_MERGE_BY_DISPLAY_ID"] = "Merge items by appearance (Display ID)"
