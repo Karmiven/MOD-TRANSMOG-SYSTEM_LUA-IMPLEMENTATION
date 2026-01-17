@@ -3698,10 +3698,10 @@ local function CreatePreviewGrid(parent)
         UpdateScrollButtonStates()
     end
     
-    upBtn:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+    upBtn:RegisterForClicks("LeftButtonUp")
     upBtn:SetScript("OnClick", function() ChangePage(-1) end)
     
-    downBtn:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+    downBtn:RegisterForClicks("LeftButtonUp")
     downBtn:SetScript("OnClick", function() ChangePage(1) end)
     
     slider:SetScript("OnValueChanged", function(self, value)
